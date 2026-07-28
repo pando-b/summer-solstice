@@ -1,0 +1,41 @@
+{
+  "name": "Summer Solstice Opportunity Scoring Rubric",
+  "version": "3.1",
+  "canonical": true,
+  "note": "SINGLE SOURCE OF TRUTH. Every skill, the xlsx, and the operating-system doc mirror this file. M2 edits weights HERE first, then regenerates mirrors. Changelog at bottom.",
+  "kill_gates": [
+    {"id": "no_free_path", "label": "No free ($0) path to buyers"},
+    {"id": "no_v1_in_build_week", "label": "Can't ship a usable v1 within one build week"},
+    {"id": "licensing", "label": "Needs licensing/regulatory approval we can't obtain (or unacceptable legal risk)"},
+    {"id": "over_budget", "label": "Realistic build+launch cost exceeds the pooled <$2k budget"},
+    {"id": "wrapper", "label": "Undifferentiated AI wrapper — no workflow ownership, data moat, or switching cost (acquirers treat these as invisible)"},
+    {"id": "no_payment_rail", "label": "No viable payment mechanism — the chosen channel/product has no named way to charge money (e.g., agent skill stores have no payment rail; a skill-store-distributed candidate needs a named monetization mechanism to pass)"},
+    {"id": "margin_floor", "label": "Structurally cannot clear a >=50% gross margin at realistic pricing — COGS-heavy inference relative to the price the market bears (every unit of value = frontier tokens), pass-through-dominated economics, or a free-incumbent price ceiling. Judged from the pro-forma at the gate's fidelity level (see economics_ladder note); 50% is the floor, ~75-80% GM is the design target buyers actually price (Flippa GM>75%)"}
+  ],
+  "criteria": [
+    {"id": "pain_urgency", "label": "Pain & Urgency", "weight": 16, "anchor_5": "acute, 'now' problem people actively complain about (high engagement)", "anchor_1": "mild annoyance, no urgency"},
+    {"id": "willingness_to_pay", "label": "Willingness to Pay", "weight": 16, "anchor_5": "buyers already pay for inferior tools/workarounds", "anchor_1": "no evidence of spend"},
+    {"id": "free_reachability", "label": "Free Reachability", "weight": 12, "anchor_5": "a precise $0 channel reaches buyers at scale, with a fast channel clock: low review/moderation latency, a working payment rail, and short time-to-first-100-qualified-users", "anchor_1": "no precise channel, or a channel with weeks of review latency / no way to charge", "sub_signals": ["channel review/moderation latency (record it: e.g., Shopify App Store 2-4+ weeks)", "payment rail exists in-channel", "expected time-to-first-100-qualified-users"]},
+    {"id": "time_to_first_dollar", "label": "Time-to-First-Dollar", "weight": 8, "anchor_5": "can charge within days of channel-live", "anchor_1": "long free period unavoidable"},
+    {"id": "build_feasibility", "label": "Build Feasibility", "weight": 10, "anchor_5": "trivially agent-native (agent-parity architecture is the default build form), v1 well within a build week", "anchor_1": "hard to build or agent-native architecture awkward for this problem"},
+    {"id": "natural_retention", "label": "Natural Retention", "weight": 10, "anchor_5": "recurring job-to-be-done (weekly/monthly), product accumulates data or workflow lock-in that compounds — the category retains by nature", "anchor_1": "one-shot job (migration, generator); user leaves when done", "rationale": "Every financial buyer gates on churn; this selects for categories that CAN retain before we ever measure it"},
+    {"id": "market_adequacy", "label": "Market Adequacy", "weight": 4, "anchor_5": "enough buyers to reach ~$250k+ ARR, niche enough to win", "anchor_1": "too small to matter or too broad to win"},
+    {"id": "acquirability", "label": "Acquirability", "weight": 14, "anchor_5": "recurring revenue + high switching cost + owner-independent/transferable + clean asset; bonus if adjacent to a named acquirer whose minimums we can realistically meet (check the age/TTM reality flags in Acquirer-Intelligence.md) AND whose appetite for this exact asset class is evidenced by a specific portfolio company or deal (cite it — a famous buyer name without portfolio adjacency scores as no named buyer; classify thesis-buyer vs size-class buyer vs plan-of-record venue per the buyer-map note in Acquirer-Intelligence.md)", "anchor_1": "one-off revenue, founder-dependent, no plausible buyer"},
+    {"id": "competitive_wedge", "label": "Competitive Wedge", "weight": 10, "anchor_5": "clear underserved gap + defensible angle in an un-crowded or genuinely differentiable space — CITED FROM AN S4 POSITIONING TEARDOWN, not vibes", "anchor_1": "saturated, entrenched incumbents, no wedge", "requires": "S4 positioning-teardown output for any finalist; Wedge <= 3 triggers the mandatory S5 switch test"}
+  ],
+  "scoring": "weighted_score = sum(weight * score) / 5 -> 0-100",
+  "verdicts": {"strong": ">=75 and all gates pass -> advance to S5 (a passing score is necessary, not sufficient)", "conditional": "60-74 -> pursue only if the pipeline is thin", "kill": "<60"},
+  "notes": [
+    "Agent-native is the DEFAULT ARCHITECTURE we build in (agent parity, atomic tools, features-as-prompts) — it is scored in Build Feasibility and Acquirability anchors, NOT a kill gate. We don't auto-reject opportunities whose buyers don't price it. (Owner decision, July 2026, per External Review #01.)",
+    "Wedge <= 3 candidates can NEVER pass S5 on Tier-1 category evidence alone — a switch test is mandatory (see demand-confidence-gate).",
+    "M2 weight edits require n>=3 logged outcomes; structural changes (gates added/removed) require n>=5 or an unambiguous external fact.",
+    "ECONOMICS LADDER (owner directive, 2026-07-06): a pro-forma is part of the assessment at EVERY gate, at increasing fidelity — S0: coarse COGS-intensity class + GM band per seed (inference-light workflow / per-unit document parsing / inference-core); S2: mini pro-forma (price anchor from named competitors, COGS/unit incl. tokens, GM%) feeding the margin_floor gate; S4: pricing corridor vs incumbents + refined unit economics; S6: v1 pro-forma in the Build Brief (pricing, COGS model, token-budget guardrails: model routing, caching, metering, BYO-key) + per-customer COGS instrumentation as an acceptance item; S15: actuals vs pro-forma weekly.",
+    "BUYER MAP (owner directive, 2026-07-06): Acquirer-Intelligence.md is a directory, not a per-deal answer. Every candidate needs an OPPORTUNITY-SPECIFIC buyer map: named buyers justified by a specific portfolio asset/deal (e.g., Visma via its Link My Books acquisition, for an e-commerce accounting tool), classified as thesis-buyer / size-class buyer / plan-of-record venue, each with the MRR/age milestone at which it becomes reachable. S0 requires the citation; S4 validates the map for finalists."
+  ],
+  "changelog": [
+    {"version": "2.0", "date": "2026-06", "change": "exit-first: added Acquirability weight-up, wrapper gate"},
+    {"version": "2.1", "date": "2026-06", "change": "M2 calibration #1 (rehearsal): Wedge 4->10, Pain 18->16, Reachability 18->14 — saturation was under-penalized"},
+    {"version": "3.0", "date": "2026-07-02", "change": "External Review #01: added Natural Retention (10) funded by TTFD 12->8, Market Adequacy 6->4, Reachability 14->12, Build Feasibility 12->10; agent-native kill gate removed (now default-architecture + anchors); added no-payment-rail gate; channel-latency sub-signals; Wedge must cite S4 teardown; rubric made machine-readable single source"},
+    {"version": "3.1", "date": "2026-07-06", "change": "Owner directive (external review of a live cycle — structural change authorized by owner, outside M2's n>=5 self-calibration rule): added margin_floor kill gate (>=50% GM structural floor) + economics-ladder note (pro-forma at every gate, fidelity rising S0->S15); Acquirability anchor tightened to require portfolio-evidenced named buyers (opportunity-specific buyer map, thesis vs size-class vs venue). Trigger: an external economics + acquirer-fit review of a live candidate (a well-known buyer had been named without portfolio adjacency; the margin question had gone unasked by the system)"}
+  ]
+}

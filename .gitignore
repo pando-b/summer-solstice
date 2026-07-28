@@ -1,0 +1,19 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Local machine config — never commit
+.claude/
+*.local.json
+.infisical.json
+
+# Secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+
+# Working files
+*.skill
+~$*
+.~lock.*
