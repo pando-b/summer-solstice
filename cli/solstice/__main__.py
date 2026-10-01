@@ -14,8 +14,8 @@ Exit codes:
 
 - 0  ok
 - 1  invalid record, missing record, corrupt history, refused transition,
-     a failed or unavailable demand fetch (`adapter`), or a refused spend
-     (`budget`) (doctor: a missing-required item; leakscan: findings, push
+     a failed or unavailable demand fetch (`adapter`), a refused spend
+     (`budget`), or a refused approvals action (`approval`) (doctor: a missing-required item; leakscan: findings, push
      blocked)
 - 2  workspace error (leakscan: the scan could not run, so it fails closed)
 - 3  workspace lock held by another writer
@@ -34,7 +34,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from solstice import __version__, demand, doctor, init, leakscan
+from solstice import __version__, approvals, demand, doctor, init, leakscan
 from solstice.adapters import REGISTRY
 from solstice.errors import EX_SOFTWARE, EX_USAGE, SolsticeError, UsageError, emit
 from solstice.lifecycle import INITIAL
@@ -305,6 +305,45 @@ def _run_run(args: argparse.Namespace) -> int:
     return 0
 
 
+APPROVAL_STATUSES = ("pending", "approved", "rejected", "closed", "all")
+
+
+def _conf_approvals(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    ls = sub.add_parser("list", help="the owner queue with derived aging, nudged items first")
+    ls.add_argument("--status", choices=APPROVAL_STATUSES, default="pending")
+    s = sub.add_parser("show", help="one item with its derived aging")
+    s.add_argument("id")
+    r = sub.add_parser("request", help="queue an item; attachments are hashed now")
+    r.add_argument("--file", required=True, help="JSON body file, or - for stdin")
+    a = sub.add_parser("approve", help="owner only, in a terminal: approve by typed hash prefix")
+    a.add_argument("id")
+    j = sub.add_parser("reject", help="owner only, in a terminal: reject with a reason")
+    j.add_argument("id")
+    j.add_argument("--reason", required=True)
+    c = sub.add_parser("close", help="close an owner_prereq (R18 buy-signal guard applies)")
+    c.add_argument("id")
+    c.add_argument("--reason")
+
+
+def _run_approvals(args: argparse.Namespace) -> int:
+    store = _store()
+    a = args.action
+    if a == "list":
+        _out(approvals.list_queue(store, status=args.status))
+    elif a == "show":
+        _out(approvals.show(store, args.id))
+    elif a == "request":
+        _out(approvals.request(store, _read_json(args.file)))
+    elif a == "approve":
+        _out(approvals.approve(store, args.id, approvals.Deps()))
+    elif a == "reject":
+        _out(approvals.reject(store, args.id, args.reason, approvals.Deps()))
+    elif a == "close":
+        _out(approvals.close(store, args.id, reason=args.reason))
+    return 0
+
+
 Command = tuple[str, Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]]
 
 COMMANDS: dict[str, Command] = {
@@ -324,6 +363,8 @@ COMMANDS: dict[str, Command] = {
                _conf_demand, _run_demand),
     "run": ("start or finish a run record (spend ledger and adapter status)",
             _conf_run, _run_run),
+    "approvals": ("owner queue: list, show, request; approve, reject, or close items",
+                  _conf_approvals, _run_approvals),
 }
 
 

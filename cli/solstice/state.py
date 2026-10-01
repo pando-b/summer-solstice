@@ -63,9 +63,11 @@ LOCK_TTL_SECONDS = 60.0
 LOCK_WAIT_SECONDS = 10.0
 
 _IDENTITY = ("id", "schema_version", "created_at", "updated_at")
-# Fields only the lifecycle (or a later approvals module) may set.
-# Set only by U9's approve/reject flow, never at creation or by update.
-_APPROVAL_FLOW_FIELDS = ("approver", "approved_at", "content_hash")
+# Set only by the approvals module (`approvals request|approve|reject`),
+# never by `record create` or `record update`: attachment hashes are taken
+# from the files at request time, and the decision fields at approve/reject.
+_APPROVAL_FLOW_FIELDS = ("approver", "approved_at", "content_hash", "rejected_at",
+                         "rejection_reason", "attachments")
 
 # Every demand number enters through `demand fetch` (R5), and the run spend
 # ledger is written only by `demand fetch` and `run start|finish` (R22).
@@ -354,7 +356,8 @@ class Store:
         if not isinstance(body, dict):
             raise RecordError("record body must be a JSON object")
         if entity == "approval" and any(body.get(k) is not None for k in _APPROVAL_FLOW_FIELDS):
-            raise RecordError("approver, approved_at and content_hash are set by the approvals flow")
+            raise RecordError(f"{', '.join(_APPROVAL_FLOW_FIELDS)} are set by the approvals flow "
+                              f"(`solstice approvals request|approve|reject`)")
         managed = [k for k in body if k in _MANAGED.get(entity, ())
                    and k not in ("status", *_CALLER_PROVENANCE.get(entity, ()))]
         if managed:
@@ -419,24 +422,31 @@ class Store:
             raise RecordError(f"transition cannot set {', '.join(blocked)}"
                               f"{_fetch_hint(entity, blocked)}")
         with self.lock():
-            rec = self.get(entity, rid)
-            ctx = lifecycle.Context(
-                now=self.now(),
-                events=self.events(entity, rid),
-                others=[p for p in self.list("product") if p["id"] != rid] if entity == "product" else [],
-                product_events=(self.events("product", rec["product_id"])
-                                if entity == "approval" and rec.get("product_id") else []),
-                launch_limit=launch_spend_limit(self.workspace),
-            )
-            new = lifecycle.apply(entity, {**rec, **fields}, to, ctx)
-            new["updated_at"] = fmt_ts(self.now())
-            self._check(entity, new)
-            self._write(entity, new)
-            event = {"type": "transition", "from": rec["status"], "to": to}
-            if reason:
-                event["reason"] = reason
-            self._append(entity, rid, event)
-            return new
+            return self.transition_locked(entity, rid, to, fields, reason=reason)
+
+    def transition_locked(self, entity: str, rid: str, to: str, fields: dict | None = None, *,
+                          reason: str | None = None, event: dict | None = None) -> dict:
+        """`transition` for a caller that already holds `self.lock()` and has
+        checked `fields`. `event` adds fields to the history entry."""
+        fields = fields or {}
+        rec = self.get(entity, rid)
+        ctx = lifecycle.Context(
+            now=self.now(),
+            events=self.events(entity, rid),
+            others=[p for p in self.list("product") if p["id"] != rid] if entity == "product" else [],
+            product_events=(self.events("product", rec["product_id"])
+                            if entity == "approval" and rec.get("product_id") else []),
+            launch_limit=launch_spend_limit(self.workspace),
+        )
+        new = lifecycle.apply(entity, {**rec, **fields}, to, ctx)
+        new["updated_at"] = fmt_ts(self.now())
+        self._check(entity, new)
+        self._write(entity, new)
+        entry = {**(event or {}), "type": "transition", "from": rec["status"], "to": to}
+        if reason:
+            entry["reason"] = reason
+        self._append(entity, rid, entry)
+        return new
 
     def record_refetch_failure(self, rid: str, error: str) -> dict:
         """Count one failed refetch run for a pending_evidence problem (R5)."""

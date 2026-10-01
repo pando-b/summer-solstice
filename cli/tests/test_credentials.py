@@ -23,6 +23,8 @@ ENV_READERS = {
     "leakscan.py": "a scrubbed git environment",
     "doctor.py": "the Probes snapshot and a scrubbed git environment; key presence goes "
                  "through credentials.missing",
+    "approvals.py": "the Deps default env, read only for the SOLSTICE_SCHEDULED_RUN marker "
+                    "(not a key)",
 }
 _ENV_ACCESS = re.compile(r"\bos\.environ\b|\bgetenv\b|\benviron\[|\benviron\.get\b")
 
