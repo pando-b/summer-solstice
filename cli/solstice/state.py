@@ -72,8 +72,10 @@ _APPROVAL_FLOW_FIELDS = ("approver", "approved_at", "content_hash", "rejected_at
 # Every demand number enters through `demand fetch` (R5), and the run spend
 # ledger is written only by `demand fetch` and `run start|finish` (R22).
 FETCH_FIELDS = ("demand", "pending_fetch")
+# The demand score is written only by `solstice score` (KTD5, KTD22).
+SCORE_FIELDS = ("score", "demand_score")
 _MANAGED: dict[str, tuple[str, ...]] = {
-    "problem": ("status", "refetch_failures", *FETCH_FIELDS),
+    "problem": ("status", "refetch_failures", *FETCH_FIELDS, *SCORE_FIELDS),
     "product": ("status", "test_started_at", "awaiting_owner_from"),
     "approval": ("status", *_APPROVAL_FLOW_FIELDS),
     "evidence": ("url", "fetched_at", "idempotency_key"),
@@ -83,7 +85,7 @@ _MANAGED: dict[str, tuple[str, ...]] = {
 _CALLER_PROVENANCE: dict[str, tuple[str, ...]] = {"evidence": ("url", "fetched_at")}
 _RESERVED_EVENTS = {"created", "updated", "transition", "migrated", "refetch_failed",
                     "demand_fetched", "fetch_failed", "spend_reserved", "spend_booked",
-                    "adapter_unavailable", "run_finished"}
+                    "adapter_unavailable", "run_finished", "scored"}
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -595,6 +597,8 @@ class Store:
 def _fetch_hint(entity: str, fields) -> str:
     if entity == "problem" and any(f in FETCH_FIELDS for f in fields):
         return "; demand and pending_fetch are written only by `solstice demand fetch` (R5)"
+    if entity == "problem" and any(f in SCORE_FIELDS for f in fields):
+        return "; score and demand_score are written only by `solstice score`"
     if entity == "run" and any(f != "status" for f in fields):
         return "; the run spend ledger is written only by `demand fetch` and `run start|finish`"
     return ""

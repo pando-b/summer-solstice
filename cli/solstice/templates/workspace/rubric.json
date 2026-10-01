@@ -1,19 +1,78 @@
 {
   "name": "Demand score",
-  "version": "4.0",
+  "version": "4.1",
   "formula": "score = 100 * (0.30*volume + 0.15*trend + 0.30*spend + 0.15*channel_reach + 0.10*gap) * pain_multiplier",
   "components": [
-    {"id": "volume", "weight": 0.30, "range": [0, 1], "description": "How many people search for or ask about the problem."},
-    {"id": "trend", "weight": 0.15, "range": [0, 1], "description": "Whether that demand is growing, flat, or shrinking."},
-    {"id": "spend", "weight": 0.30, "range": [0, 1], "description": "Evidence that people already pay to solve the problem."},
-    {"id": "channel_reach", "weight": 0.15, "range": [0, 1], "description": "How precisely a low-cost channel reaches the buyers."},
-    {"id": "gap", "weight": 0.10, "range": [0, 1], "description": "How underserved the problem is by existing products."}
+    {"id": "volume", "weight": 0.30, "range": [0, 1], "kind": "measured", "description": "How many people search for or ask about the problem."},
+    {"id": "trend", "weight": 0.15, "range": [0, 1], "kind": "measured", "description": "Whether that demand is growing, flat, or shrinking."},
+    {"id": "spend", "weight": 0.30, "range": [0, 1], "kind": "rated", "description": "Evidence that people already pay to solve the problem."},
+    {"id": "channel_reach", "weight": 0.15, "range": [0, 1], "kind": "rated", "description": "How precisely a low-cost channel reaches the buyers."},
+    {"id": "gap", "weight": 0.10, "range": [0, 1], "kind": "rated", "description": "How underserved the problem is by existing products."}
   ],
   "pain_multiplier": {
     "default": 1.0,
     "min": 0.5,
     "max": 1.5,
-    "description": "Scales the weighted sum by how acute and urgent the pain is in the evidence."
+    "description": "Scales the weighted sum by how acute and urgent the pain is in the evidence. The pain rating's anchor maps linearly onto [min, max]: anchor 0 -> min, 0.5 -> 1.0, 1 -> max."
+  },
+  "measured": {
+    "description": "solstice score computes volume and trend from the problem's demand entries. Each metric has its own bands: an entry scores the highest step whose at_least it reaches, and 0 below the first step. The component takes the highest-scoring entry. Low-confidence entries count only when no medium- or high-confidence entry has a band for that component, and then cap at low_confidence_cap. Bands are provisional until the first real-seed run reports the component spread.",
+    "volume": {
+      "low_confidence_cap": 0.5,
+      "bands": {
+        "keyword_volume": {"unit": "searches_per_month", "steps": [{"at_least": 50, "score": 0.25}, {"at_least": 300, "score": 0.5}, {"at_least": 1000, "score": 0.75}, {"at_least": 5000, "score": 1.0}]},
+        "active_installs_top": {"unit": "installs", "steps": [{"at_least": 1000, "score": 0.25}, {"at_least": 10000, "score": 0.5}, {"at_least": 100000, "score": 0.75}, {"at_least": 1000000, "score": 1.0}]},
+        "active_installs_sum": {"unit": "installs", "steps": [{"at_least": 5000, "score": 0.25}, {"at_least": 50000, "score": 0.5}, {"at_least": 500000, "score": 0.75}, {"at_least": 5000000, "score": 1.0}]},
+        "extension_users": {"unit": "users", "steps": [{"at_least": 1000, "score": 0.25}, {"at_least": 10000, "score": 0.5}, {"at_least": 100000, "score": 0.75}, {"at_least": 1000000, "score": 1.0}]},
+        "hn_stories_365d": {"unit": "stories", "steps": [{"at_least": 5, "score": 0.25}, {"at_least": 20, "score": 0.5}, {"at_least": 60, "score": 0.75}, {"at_least": 150, "score": 1.0}]},
+        "hn_points_top": {"unit": "points", "steps": [{"at_least": 100, "score": 0.25}, {"at_least": 500, "score": 0.5}, {"at_least": 2000, "score": 0.75}, {"at_least": 8000, "score": 1.0}]},
+        "reddit_engagement_sum": {"unit": "engagement", "steps": [{"at_least": 200, "score": 0.25}, {"at_least": 1000, "score": 0.5}, {"at_least": 5000, "score": 0.75}, {"at_least": 20000, "score": 1.0}]},
+        "youtube_engagement_sum": {"unit": "engagement", "steps": [{"at_least": 20000, "score": 0.25}, {"at_least": 200000, "score": 0.5}, {"at_least": 2000000, "score": 0.75}, {"at_least": 20000000, "score": 1.0}]},
+        "tiktok_engagement_sum": {"unit": "engagement", "steps": [{"at_least": 50000, "score": 0.25}, {"at_least": 500000, "score": 0.5}, {"at_least": 5000000, "score": 0.75}, {"at_least": 50000000, "score": 1.0}]}
+      },
+      "unbanded_note": "x_engagement_sum is left out on purpose: it reads named accounts, never a keyword-wide count. Revenue metrics feed the spend rating, not volume."
+    },
+    "trend": {
+      "low_confidence_cap": 0.5,
+      "bands": {
+        "trend_change_pct": {"unit": "percent", "steps": [{"at_least": -10, "score": 0.25}, {"at_least": 0, "score": 0.5}, {"at_least": 15, "score": 0.75}, {"at_least": 40, "score": 1.0}]}
+      }
+    }
+  },
+  "rated": {
+    "description": "The find skill rates spend, channel_reach, gap, and pain on these anchors only, citing at least one evidence record ID or demand-entry ID on the problem for every rating. A spend rating above 0 must cite at least one entry or evidence record whose metric is in spend_metrics; engagement and mention counts never justify spend.",
+    "anchors": [0, 0.25, 0.5, 0.75, 1],
+    "spend_metrics": ["mrr_usd", "revenue_30d_usd", "paid_installs", "sales_count", "paid_review_count"],
+    "components": {
+      "spend": {
+        "0": "No sign that anyone pays to solve this.",
+        "0.25": "One weak spend signal: a single small paid product or a handful of sales.",
+        "0.5": "Clear spend: a paid product with a real sales or review count, or verified revenue at a small scale.",
+        "0.75": "Several paid products, or one with verified monthly revenue in the thousands.",
+        "1": "A proven paid market: multiple products with verified revenue or large sales counts."
+      },
+      "channel_reach": {
+        "0": "No channel reaches these buyers short of cold outreach.",
+        "0.25": "A broad channel where the buyers are a small slice.",
+        "0.5": "A channel with built-in discovery that partly targets the buyers.",
+        "0.75": "A marketplace or search channel where buyers look for exactly this.",
+        "1": "A channel with built-in discovery whose audience is the buyers, with a measured reach number."
+      },
+      "gap": {
+        "0": "Well served by good, free, or entrenched products.",
+        "0.25": "Served, with minor complaints.",
+        "0.5": "Served, with recurring complaints about a specific shortfall.",
+        "0.75": "Existing products are stale, poorly rated, or miss a clear segment.",
+        "1": "No credible product does the job."
+      },
+      "pain": {
+        "0": "Mild annoyance; nobody is looking for a fix.",
+        "0.25": "Occasional friction with easy workarounds.",
+        "0.5": "Regular friction; people describe workarounds.",
+        "0.75": "Frequent, costly pain; people ask for or hack together fixes.",
+        "1": "Acute, urgent pain tied to money, deadlines, or compliance."
+      }
+    }
   },
   "gates": [
     {"id": "spend_floor", "field": "spend", "op": ">", "value": 0.3, "description": "No evidence of spend, no go."},
@@ -22,12 +81,13 @@
   "calibration": {
     "weights_min_outcomes": 3,
     "structure_min_outcomes": 5,
-    "description": "The review skill changes weights only after n>=3 recorded outcomes, and adds or removes components or gates only after n>=5."
+    "description": "The review skill changes weights or bands only after n>=3 recorded outcomes, and adds or removes components or gates only after n>=5."
   },
   "lenses": [
     {"id": "acquirability", "optional": true, "description": "Optional lens; not part of the score."}
   ],
   "changelog": [
-    {"version": "4.0", "change": "Demand score replaces the nine-criterion rubric."}
+    {"version": "4.0", "change": "Demand score replaces the nine-criterion rubric."},
+    {"version": "4.1", "change": "Volume and trend are measured from demand entries through per-metric bands; spend, channel reach, gap, and pain are anchored ratings with citations. Bands are provisional."}
   ]
 }

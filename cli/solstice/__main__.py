@@ -34,7 +34,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from solstice import __version__, approvals, demand, doctor, init, leakscan
+from solstice import __version__, approvals, demand, doctor, init, leakscan, score
 from solstice.adapters import REGISTRY
 from solstice.errors import EX_SOFTWARE, EX_USAGE, SolsticeError, UsageError, emit
 from solstice.lifecycle import INITIAL
@@ -344,6 +344,35 @@ def _run_approvals(args: argparse.Namespace) -> int:
     return 0
 
 
+def _conf_score(p: argparse.ArgumentParser) -> None:
+    p.add_argument("problem_id")
+    p.add_argument("--ratings", required=True,
+                   help="JSON {spend|channel_reach|gap|pain: {anchor, citations[]}}, "
+                        "a file or - for stdin")
+
+
+def _run_score(args: argparse.Namespace) -> int:
+    store = _store()
+    _out(score.score_problem(store, args.problem_id, _read_json(args.ratings)))
+    return 0
+
+
+def _run_rank(args: argparse.Namespace) -> int:
+    _out(score.rank(_store()))
+    return 0
+
+
+def _conf_rubric(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    sub.add_parser("install", help="copy the packaged rubric into the workspace "
+                                   "(refuses to overwrite an equal or newer one)")
+
+
+def _run_rubric(args: argparse.Namespace) -> int:
+    _out(score.install_rubric(_store()))
+    return 0
+
+
 Command = tuple[str, Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]]
 
 COMMANDS: dict[str, Command] = {
@@ -365,6 +394,12 @@ COMMANDS: dict[str, Command] = {
             _conf_run, _run_run),
     "approvals": ("owner queue: list, show, request; approve, reject, or close items",
                   _conf_approvals, _run_approvals),
+    "score": ("score a found problem: measured volume/trend plus cited, anchored ratings",
+              _conf_score, _run_score),
+    "rank": ("scored found problems as JSON, highest demand score first",
+             lambda p: None, _run_rank),
+    "rubric": ("install the packaged demand-score rubric into the workspace",
+               _conf_rubric, _run_rubric),
 }
 
 
