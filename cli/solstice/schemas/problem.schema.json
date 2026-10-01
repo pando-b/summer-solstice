@@ -114,7 +114,7 @@
     },
     "demand": {
       "type": "object",
-      "description": "A machine-fetched demand number with provenance (R3). method 'model' is not allowed (R5).",
+      "description": "A machine-fetched demand number with provenance (R3). method 'model' is not allowed (R5). `demand fetch` assigns each entry its own ULID `id` so ratings can cite it.",
       "required": [
         "metric",
         "value",
@@ -128,6 +128,9 @@
       ],
       "additionalProperties": false,
       "properties": {
+        "id": {
+          "$ref": "#/$defs/ulid"
+        },
         "metric": {
           "type": "string",
           "minLength": 1
@@ -170,6 +173,10 @@
             "medium",
             "high"
           ]
+        },
+        "note": {
+          "type": "string",
+          "description": "How to read the value (e.g. a lower bound)"
         }
       }
     },

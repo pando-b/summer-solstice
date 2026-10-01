@@ -1,0 +1,60 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "cost": 0.075,
+    "status_code": 20000,
+    "status_message": "Ok.",
+    "tasks": [
+      {
+        "cost": 0.075,
+        "id": "00000000-0000-0000-0000-000000000001",
+        "result": [
+          {
+            "competition": "LOW",
+            "competition_index": 12,
+            "cpc": 1.25,
+            "keyword": "example widget tracker",
+            "language_code": "en",
+            "location_code": 2840,
+            "monthly_searches": [
+              {
+                "month": 12,
+                "search_volume": 1300,
+                "year": 2025
+              }
+            ],
+            "search_volume": 1300
+          },
+          {
+            "competition": null,
+            "competition_index": null,
+            "cpc": null,
+            "keyword": "example widget restock",
+            "language_code": "en",
+            "location_code": 2840,
+            "monthly_searches": [],
+            "search_volume": 0
+          },
+          {
+            "competition": "MEDIUM",
+            "competition_index": 40,
+            "cpc": 0.8,
+            "keyword": "example widget alerts",
+            "language_code": "en",
+            "location_code": 2840,
+            "monthly_searches": [],
+            "search_volume": 480
+          }
+        ],
+        "result_count": 3,
+        "status_code": 20000,
+        "status_message": "Ok."
+      }
+    ],
+    "tasks_count": 1,
+    "tasks_error": 0,
+    "version": "0.1.20260101"
+  },
+  "headers": {},
+  "status": 200
+}

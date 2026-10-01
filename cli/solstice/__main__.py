@@ -13,8 +13,10 @@ nothing to stdout (see `solstice.errors`)::
 Exit codes:
 
 - 0  ok
-- 1  invalid record, missing record, corrupt history, or refused transition
-     (doctor: a missing-required item; leakscan: findings, push blocked)
+- 1  invalid record, missing record, corrupt history, refused transition,
+     a failed or unavailable demand fetch (`adapter`), or a refused spend
+     (`budget`) (doctor: a missing-required item; leakscan: findings, push
+     blocked)
 - 2  workspace error (leakscan: the scan could not run, so it fails closed)
 - 3  workspace lock held by another writer
 - 64 usage error: unknown command, bad argument (`kind: usage`)
@@ -32,8 +34,9 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from solstice import __version__, doctor, init, leakscan
-from solstice.errors import EX_SOFTWARE, EX_USAGE, SolsticeError, emit
+from solstice import __version__, demand, doctor, init, leakscan
+from solstice.adapters import REGISTRY
+from solstice.errors import EX_SOFTWARE, EX_USAGE, SolsticeError, UsageError, emit
 from solstice.lifecycle import INITIAL
 from solstice.state import ENTITIES, RecordError, Store, load_schema
 from solstice.workspace import WorkspaceError, resolve_workspace
@@ -246,6 +249,62 @@ def _run_leakscan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _conf_demand(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    sub.add_parser("sources", help="each adapter's availability, cost model, and key status as JSON")
+    f = sub.add_parser("fetch", help="run one adapter fetch and print the normalized result")
+    f.add_argument("adapter", choices=list(REGISTRY))
+    f.add_argument("--query", action="append", default=[],
+                   help="search query (repeat for dataforseo_volume: one task, many keywords)")
+    f.add_argument("--handle", help="account handle (scrapecreators --platform x only)")
+    f.add_argument("--platform", help="scrapecreators: reddit, tiktok, youtube, or x")
+    f.add_argument("--run", dest="run_id", help="run to book spend on (default: an implicit run)")
+    target = f.add_mutually_exclusive_group()
+    target.add_argument("--new-problem", action="store_true",
+                        help="create a problem from the result (needs --title)")
+    target.add_argument("--problem", dest="problem_id", help="add the result to this problem")
+    f.add_argument("--title", help="title for --new-problem")
+    for name in ("metric", "unit", "url", "source"):
+        f.add_argument(f"--{name}", help=f"manual entry: {name}")
+    f.add_argument("--value", type=float, help="manual entry: the number")
+
+
+def _run_demand(args: argparse.Namespace) -> int:
+    store = _store()
+    deps = demand.Deps()
+    if args.action == "sources":
+        _out(demand.sources(store, deps))
+        return 0
+    if args.title is not None and not args.new_problem:
+        raise UsageError("--title applies only with --new-problem")
+    if args.new_problem and not args.title:
+        raise UsageError("--new-problem needs --title")
+    params = demand.Params(queries=args.query, handle=args.handle, platform=args.platform,
+                           metric=args.metric, value=args.value, unit=args.unit, url=args.url,
+                           source=args.source)
+    _out(demand.fetch(store, args.adapter, params, deps=deps, run_id=args.run_id,
+                      new_problem=args.title if args.new_problem else None,
+                      problem_id=args.problem_id))
+    return 0
+
+
+def _conf_run(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    s = sub.add_parser("start", help="open a run record that carries spend and adapter status")
+    s.add_argument("--stage", required=True, help="e.g. find")
+    f = sub.add_parser("finish", help="close a run: complete, partial, or failed")
+    f.add_argument("id")
+
+
+def _run_run(args: argparse.Namespace) -> int:
+    store = _store()
+    if args.action == "start":
+        _out(demand.start_run(store, args.stage))
+    else:
+        _out(demand.finish_run(store, args.id))
+    return 0
+
+
 Command = tuple[str, Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]]
 
 COMMANDS: dict[str, Command] = {
@@ -261,6 +320,10 @@ COMMANDS: dict[str, Command] = {
                _conf_doctor, _run_doctor),
     "leakscan": ("leak guard: structural tree check, pre-push range scan, or message scan",
                  _conf_leakscan, _run_leakscan),
+    "demand": ("list demand sources, or fetch a machine-measured demand number",
+               _conf_demand, _run_demand),
+    "run": ("start or finish a run record (spend ledger and adapter status)",
+            _conf_run, _run_run),
 }
 
 

@@ -2,8 +2,9 @@
 missing-required (U3, R16).
 
 Every outside probe (PATH lookups, environment, home directory, plugin root)
-comes through `Probes`, so tests can inject them. Key values are never read
-beyond a presence check and never printed.
+comes through `Probes`, so tests can inject them. Key presence is checked
+through `credentials.missing` against the probed environment; key values
+are never read or printed.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from solstice import __version__
+from solstice import __version__, credentials
 from solstice.init import HOOKS_DIR, WORKSPACE_GIT_KEY, template_dir
 from solstice.workspace import ENV_VAR, WorkspaceError, resolve_workspace
 
@@ -191,7 +192,7 @@ def run_checks(p: Probes) -> dict:
         adapters.setdefault(s["name"], []).append(s["key"])
     ready = []
     for adapter, keys in adapters.items():
-        missing = [k for k in keys if not p.env.get(k)]
+        missing = credentials.missing(keys, env=p.env)
         if missing:
             checks.append(_check(f"{adapter} keys", OPTIONAL, "unset: " + ", ".join(missing)))
         else:

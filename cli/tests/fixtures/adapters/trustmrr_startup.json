@@ -1,0 +1,19 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "data": {
+      "activeSubscriptions": 290,
+      "customers": 310,
+      "growth30d": 4.2,
+      "mrr": 1234500,
+      "name": "Example Widget Co",
+      "revenueLast30Days": 1300000,
+      "slug": "example-widget-co",
+      "totalRevenue": 25000000,
+      "website": "https://example.com"
+    },
+    "meta": {}
+  },
+  "headers": {},
+  "status": 200
+}

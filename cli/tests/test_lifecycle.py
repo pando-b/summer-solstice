@@ -6,6 +6,7 @@ import pytest
 
 import factories as f
 from solstice.lifecycle import TransitionError
+from solstice.state import RecordError
 
 LIVE_AT = "2026-01-20T00:00:00Z"
 
@@ -112,7 +113,7 @@ def test_fourth_product_into_building_rejected_with_cap_message(store):
 
 def test_problems_and_qualified_products_do_not_count(store):
     for i in range(10):
-        store.create("problem", f.problem(slug=f"example-problem-{i}"))
+        store.create_managed("problem", f.problem(slug=f"example-problem-{i}"))
     _product(store)
     _product(store)
     _product(store, "building")
@@ -226,7 +227,7 @@ def _pending_problem(store):
     body = f.problem(status="pending_evidence", pending_fetch={
         "adapter": "example_adapter", "error": "timeout", "attempted_at": "2026-01-05T10:00:00Z"})
     del body["demand"]
-    return store.create("problem", body)
+    return store.create_managed("problem", body)
 
 
 def test_problem_drops_only_after_three_failed_refetches(store):
@@ -240,16 +241,19 @@ def test_problem_drops_only_after_three_failed_refetches(store):
     assert store.transition("problem", rec["id"], "dropped")["status"] == "dropped"
 
 
-def test_pending_problem_returns_to_found_only_with_demand(store):
+def test_pending_problem_cannot_return_to_found_through_record_transition(store):
+    """Demand enters only through `demand fetch` (R5), which moves the
+    problem back to found itself (see test_demand)."""
     rec = _pending_problem(store)
-    with pytest.raises(Exception):
+    with pytest.raises(RecordError):
         store.transition("problem", rec["id"], "found")
-    got = store.transition("problem", rec["id"], "found", {"demand": [f.demand(value=0)]})
-    assert got["status"] == "found" and got["refetch_failures"] == 0
+    with pytest.raises(RecordError, match="demand"):
+        store.transition("problem", rec["id"], "found", {"demand": [f.demand(value=0)]})
+    assert store.get("problem", rec["id"])["status"] == "pending_evidence"
 
 
 def test_problem_illegal_transition(store):
-    rec = store.create("problem", f.problem())
+    rec = store.create_managed("problem", f.problem())
     with pytest.raises(TransitionError):
         store.transition("problem", rec["id"], "dropped")
     assert store.transition("problem", rec["id"], "rejected")["status"] == "rejected"

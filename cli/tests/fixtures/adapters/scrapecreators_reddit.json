@@ -1,0 +1,28 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "posts": [
+      {
+        "created_at_iso": "2025-12-20T10:00:00.000Z",
+        "id": "t3_ex001",
+        "num_comments": 45,
+        "score": 120,
+        "subreddit": "examplewidgets",
+        "title": "Anyone else losing track of example widget restocks?",
+        "url": "https://www.reddit.com/r/examplewidgets/comments/ex001/anyone_else/"
+      },
+      {
+        "created_at_iso": "2025-12-28T10:00:00.000Z",
+        "id": "t3_ex002",
+        "num_comments": 6,
+        "score": 8,
+        "subreddit": "examplewidgets",
+        "title": "Tool for example widget alerts?",
+        "url": "https://www.reddit.com/r/examplewidgets/comments/ex002/tool_for/"
+      }
+    ],
+    "success": true
+  },
+  "headers": {},
+  "status": 200
+}

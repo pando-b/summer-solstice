@@ -1,0 +1,23 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "cost": 0.075,
+    "status_code": 20000,
+    "status_message": "Ok.",
+    "tasks": [
+      {
+        "cost": 0,
+        "id": "00000000-0000-0000-0000-000000000001",
+        "result": null,
+        "result_count": 0,
+        "status_code": 40202,
+        "status_message": "Rate limit per minute exceeded."
+      }
+    ],
+    "tasks_count": 1,
+    "tasks_error": 1,
+    "version": "0.1.20260101"
+  },
+  "headers": {},
+  "status": 200
+}

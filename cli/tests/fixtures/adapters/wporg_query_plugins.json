@@ -1,0 +1,53 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "info": {
+      "page": 1,
+      "pages": 7,
+      "results": 64
+    },
+    "plugins": [
+      {
+        "active_installs": 10000,
+        "downloaded": 123456,
+        "last_updated": "2026-01-02 3:04pm GMT",
+        "name": "Example Widget Restock",
+        "num_ratings": 41,
+        "rating": 92,
+        "short_description": "Synthetic plugin for tests.",
+        "slug": "example-widget-restock",
+        "support_threads": 12,
+        "support_threads_resolved": 9,
+        "version": "1.2.0"
+      },
+      {
+        "active_installs": "2,000+",
+        "downloaded": 9876,
+        "last_updated": "2025-12-01 9:00am GMT",
+        "name": "Example Widget Alerts",
+        "num_ratings": 7,
+        "rating": 80,
+        "short_description": "Another synthetic plugin.",
+        "slug": "example-widget-alerts",
+        "support_threads": 3,
+        "support_threads_resolved": 1,
+        "version": "0.9.1"
+      },
+      {
+        "active_installs": 0,
+        "downloaded": 12,
+        "last_updated": "2025-06-01 1:00am GMT",
+        "name": "Example Widget Lite",
+        "num_ratings": 0,
+        "rating": 0,
+        "short_description": "Synthetic plugin with no installs.",
+        "slug": "example-widget-lite",
+        "support_threads": 0,
+        "support_threads_resolved": 0,
+        "version": "0.1.0"
+      }
+    ]
+  },
+  "headers": {},
+  "status": 200
+}

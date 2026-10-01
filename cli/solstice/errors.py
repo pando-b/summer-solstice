@@ -59,3 +59,10 @@ def envelope(kind: str, message: str, details: dict | None = None) -> dict:
 
 def emit(kind: str, message: str, details: dict | None = None) -> None:
     print(json.dumps(envelope(kind, message, details), sort_keys=True), file=sys.stderr)
+
+
+class UsageError(SolsticeError):
+    """The command was used incorrectly (exit EX_USAGE, like argparse errors)."""
+
+    kind = "usage"
+    exit_code = EX_USAGE

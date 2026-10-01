@@ -15,7 +15,7 @@ from solstice.state import ENTITIES, launch_spend_limit
 from solstice.workspace import resolve_workspace
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ADAPTERS = {"dataforseo", "apify", "trustmrr", "freemius", "polar"}
+ADAPTERS = {"dataforseo", "trustmrr", "scrapecreators", "freemius", "polar"}
 
 
 def _git_config(repo: Path, key: str) -> str | None:
@@ -46,6 +46,7 @@ def test_init_on_new_path_creates_full_scaffold(tmp_path, capsys):
     assert cfg["workspace_root"] == "."
     assert cfg["budgets"] == {
         "factory_monthly_cap_usd": 50,
+        "per_run_cap_usd": 5,
         "launch_spend_limit_usd": 50,
         "owner_hourly_rate_usd": 100,
     }
@@ -64,7 +65,8 @@ def test_init_on_new_path_creates_full_scaffold(tmp_path, capsys):
     assert {s["adapter"] for s in manifest["secrets"]} == ADAPTERS
     assert (ws / "denylist.txt").is_file()
     ignore = (ws / ".gitignore").read_text().splitlines()
-    for line in (".solstice/write.lock", ".solstice/write.lock.guard", "*.tmp", ".env*"):
+    for line in (".solstice/write.lock", ".solstice/write.lock.guard", ".solstice/rate/",
+                 "*.tmp", ".env*"):
         assert line in ignore
 
     # The scaffold is immediately usable by the rest of the CLI.

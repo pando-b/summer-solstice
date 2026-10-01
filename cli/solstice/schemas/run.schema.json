@@ -33,6 +33,7 @@
     },
     "status": {
       "enum": [
+        "running",
         "complete",
         "partial",
         "failed"
@@ -49,7 +50,8 @@
     },
     "spend_usd": {
       "type": "number",
-      "minimum": 0
+      "minimum": 0,
+      "description": "Reserved and booked spend of this run's paid calls (R22)"
     },
     "adapter_status": {
       "type": "object",
@@ -63,12 +65,46 @@
             "enum": [
               "ok",
               "failed",
-              "skipped"
+              "skipped",
+              "unavailable"
             ]
           },
           "error": {
             "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why the adapter is unavailable: missing key <NAME>, budget, out of credits, ..."
+          },
+          "calls": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failures": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "spend_usd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "ok": {
+            "type": "integer",
+            "minimum": 0
           }
+        },
+        "if": {
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "reason"
+          ]
         }
       }
     },

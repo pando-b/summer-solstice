@@ -53,6 +53,16 @@ SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("private-key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
     ("aws-access-key-id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}")),
+    # A secrets-manager workspace or project ID assigned a value (R26: no owner identifiers).
+    ("secrets-manager-id", re.compile(
+        r"\b(?:workspace_?id|project_?id|INFISICAL_[A-Z0-9_]+)[\"']?\s*[:=]\s*[\"']?"
+        r"[A-Za-z0-9][A-Za-z0-9_-]{7,}", re.IGNORECASE)),
+    # Header assignments carrying a literal value. These run before the generic
+    # credential rule so a header is reported under its own name.
+    ("api-key-header", re.compile(
+        r"(?i)\bx-api-key[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9_\-.]{16,}")),
+    ("authorization-header", re.compile(
+        r"(?i)\bauthorization[\"']?\s*[:=]\s*[\"']?(?:basic|bearer)\s+[A-Za-z0-9+/=_\-.]{16,}")),
     # Quoted, or unquoted up to whitespace, a quote, a comment, or end of line.
     ("credential-assignment", re.compile(
         r"(?i)(?:api[_-]?key|secret|token|password)[\"']?\s*[:=]\s*"

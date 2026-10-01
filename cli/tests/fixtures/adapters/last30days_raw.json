@@ -1,0 +1,33 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "items_by_source": {
+    "hackernews": [
+      {
+        "engagement": {
+          "comments": 9,
+          "points": 30
+        },
+        "title": "Synthetic HN discussion",
+        "url": "https://news.ycombinator.com/item?id=1000003"
+      }
+    ],
+    "reddit": [
+      {
+        "engagement": {
+          "num_comments": 12,
+          "score": 55
+        },
+        "title": "Synthetic thread about widget restocks",
+        "url": "https://www.reddit.com/r/examplewidgets/comments/ex003/thread/"
+      }
+    ],
+    "web": [
+      {
+        "engagement": {},
+        "title": "Synthetic item without a URL",
+        "url": ""
+      }
+    ]
+  },
+  "topic": "example widget restocks"
+}

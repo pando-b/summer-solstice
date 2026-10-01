@@ -90,7 +90,7 @@ def test_held_lock_is_lock_held_exit_3(cli, ws, monkeypatch):
     now = state.now_utc()
     lock.write_text(json.dumps({"pid": 99999, "acquired_at": f.ts(now),
                                 "expires_at": f.ts(now + timedelta(hours=1))}))
-    code, out, err = cli("record", "create", "problem", "--file", "@body", body=f.problem())
+    code, out, err = cli("record", "create", "product", "--file", "@body", body=f.product())
     assert code == 3 and out == ""
     e = _envelope(err)
     assert e["kind"] == "lock_held" and e["details"]["pid"] == 99999
@@ -126,8 +126,13 @@ def test_unexpected_failure_is_internal_without_traceback(cli, monkeypatch):
     assert "Traceback" not in err
 
 
-def test_record_events_prints_history_in_order(cli):
-    rec = _create(cli, "problem", f.problem())
+def _seed_problem(ws):
+    """Problems enter through `demand fetch`; seed one through the store."""
+    return state.Store(ws).create_managed("problem", f.problem())
+
+
+def test_record_events_prints_history_in_order(cli, ws):
+    rec = _seed_problem(ws)
     assert cli("record", "update", "problem", rec["id"], "--file", "@body",
                body={"slug": "example-widget-restock-dates"})[0] == 0
     assert cli("record", "transition", "problem", rec["id"], "rejected")[0] == 0
@@ -146,7 +151,7 @@ def test_record_events_for_missing_record_is_not_found(cli):
 @pytest.mark.parametrize("argv", [["record", "events", "problem"],
                                   ["record", "transition", "problem"]])
 def test_corrupt_history_line_is_an_error_not_a_traceback(cli, ws, argv):
-    rec = _create(cli, "problem", f.problem())
+    rec = _seed_problem(ws)
     path = ws / "records" / "problems" / f"{rec['id']}.events.jsonl"
     with path.open("a") as fh:
         fh.write("{not json\n")

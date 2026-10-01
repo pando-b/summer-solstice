@@ -99,7 +99,7 @@ def test_no_keys_reports_keyless_mode(tmp_path, make_checkout):
     report = doctor.run_checks(_probes(tmp_path, co, env={}))
     assert report["mode"] == "keyless"
     assert report["keyless_sources"] == ["WordPress.org", "Hacker News"]
-    for adapter in ("DataForSEO", "Apify", "TrustMRR", "Freemius", "Polar"):
+    for adapter in ("DataForSEO", "ScrapeCreators", "TrustMRR", "Freemius", "Polar"):
         assert _status(report, f"{adapter} keys") == OPT
 
 

@@ -37,7 +37,7 @@ def test_ulids_are_crockford_26_chars_and_time_ordered(clock):
 
 
 def test_create_writes_one_file_per_record_with_version_and_event(store, ws):
-    rec = store.create("problem", f.problem())
+    rec = store.create_managed("problem", f.problem())
     assert ULID_RE.match(rec["id"])
     assert rec["schema_version"] == SCHEMA_VERSION
     path = ws / "records" / "problems" / f"{rec['id']}.json"
@@ -47,7 +47,7 @@ def test_create_writes_one_file_per_record_with_version_and_event(store, ws):
 
 def test_problem_round_trips_create_get_list_unchanged(store):
     body = f.problem()
-    rec = store.create("problem", body)
+    rec = store.create_managed("problem", body)
     for k, v in body.items():
         assert rec[k] == v
     assert store.get("problem", rec["id"]) == rec
@@ -58,13 +58,13 @@ def test_problem_round_trips_create_get_list_unchanged(store):
 
 def test_create_rejects_invalid_record_and_writes_nothing(store, ws):
     with pytest.raises(RecordError, match="method"):
-        store.create("problem", f.problem(demand=[f.demand(method="model")]))
+        store.create_managed("problem", f.problem(demand=[f.demand(method="model")]))
     assert not list(ws.rglob("*.json"))
 
 
 def test_create_refuses_caller_supplied_identity_fields(store):
     with pytest.raises(RecordError):
-        store.create("problem", f.problem(id="01JAAAAAAAAAAAAAAAAAAAAAAA"))
+        store.create_managed("problem", f.problem(id="01JAAAAAAAAAAAAAAAAAAAAAAA"))
 
 
 @pytest.mark.parametrize("entity,body", [
@@ -117,7 +117,7 @@ def test_duplicate_evidence_same_url_same_fetch_date_is_not_recorded_twice(store
 
 
 def test_update_merges_patch_and_appends_history(store, ws, clock):
-    rec = store.create("problem", f.problem())
+    rec = store.create_managed("problem", f.problem())
     clock.advance(hours=1)
     got = store.update("problem", rec["id"], {"title": "Renamed synthetic problem"})
     assert got["title"] == "Renamed synthetic problem"
@@ -128,7 +128,7 @@ def test_update_merges_patch_and_appends_history(store, ws, clock):
 
 @pytest.mark.parametrize("field", ["id", "schema_version", "created_at", "status"])
 def test_update_refuses_managed_fields(store, field):
-    rec = store.create("problem", f.problem())
+    rec = store.create_managed("problem", f.problem())
     with pytest.raises(RecordError):
         store.update("problem", rec["id"], {field: "x"})
 
@@ -140,14 +140,14 @@ def test_update_cannot_self_approve_an_approval(store):
 
 
 def test_update_validates_result(store):
-    rec = store.create("problem", f.problem())
+    rec = store.create_managed("problem", f.problem())
     with pytest.raises(RecordError):
         store.update("problem", rec["id"], {"demand": [f.demand(method="model")]})
     assert store.get("problem", rec["id"]) == rec
 
 
 def test_product_slug_change_keeps_every_id_reference_resolving(store):
-    prob = store.create("problem", f.problem())
+    prob = store.create_managed("problem", f.problem())
     prod = store.create("product", f.product(problem_id=prob["id"]))
     dec = store.create("decision", f.decision(problem_id=prob["id"], product_id=prod["id"]))
     appr = store.create("approval", f.approval(product_id=prod["id"]))
@@ -201,7 +201,7 @@ def _hold_lock(ws, clock, seconds):
 def test_second_writer_exits_with_lock_message_when_lock_held(store, ws, clock):
     _hold_lock(ws, clock, 60)
     with pytest.raises(LockError, match="locked"):
-        store.create("problem", f.problem())
+        store.create_managed("problem", f.problem())
 
 
 def test_second_writer_waits_for_release(ws, clock):
@@ -213,7 +213,7 @@ def test_second_writer_waits_for_release(ws, clock):
         lock.unlink()
 
     s = Store(ws, now=clock, lock_wait=5, sleep=fake_sleep)
-    rec = s.create("problem", f.problem())
+    rec = s.create_managed("problem", f.problem())
     assert calls and rec["id"]
     assert not lock.exists()
 
@@ -221,7 +221,7 @@ def test_second_writer_waits_for_release(ws, clock):
 def test_expired_lock_is_reclaimed(store, ws, clock):
     lock = _hold_lock(ws, clock, 60)
     clock.advance(seconds=61)
-    store.create("problem", f.problem())
+    store.create_managed("problem", f.problem())
     assert not lock.exists()
 
 
@@ -303,7 +303,7 @@ def test_expired_writer_release_keeps_the_successors_lock(ws, clock):
 
 def test_lock_released_after_failed_write(store, ws):
     with pytest.raises(RecordError):
-        store.create("problem", f.problem(demand=[]))
+        store.create_managed("problem", f.problem(demand=[]))
     assert not (ws / ".solstice" / "write.lock").exists()
 
 
@@ -394,29 +394,59 @@ def cli(ws, monkeypatch, capsys, tmp_path):
 
 
 def test_cli_record_create_get_list_update(cli):
-    code, rec, _ = cli("record", "create", "problem", "--file", "@body", body=f.problem())
+    code, rec, _ = cli("record", "create", "product", "--file", "@body", body=f.product())
     assert code == 0
-    assert cli("record", "get", "problem", rec["id"])[1] == rec
-    assert cli("record", "list", "problem", "--status", "found")[1] == [rec]
-    code, upd, _ = cli("record", "update", "problem", rec["id"], "--file", "@body",
-                       body={"slug": "example-widget-restock-dates"})
-    assert code == 0 and upd["slug"] == "example-widget-restock-dates"
+    assert cli("record", "get", "product", rec["id"])[1] == rec
+    assert cli("record", "list", "product", "--status", "qualified")[1] == [rec]
+    code, upd, _ = cli("record", "update", "product", rec["id"], "--file", "@body",
+                       body={"slug": "example-widget-pro"})
+    assert code == 0 and upd["slug"] == "example-widget-pro"
 
 
 def test_cli_create_from_stdin(cli, monkeypatch):
     import io
 
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(f.problem())))
-    code, rec, _ = cli("record", "create", "problem", "--file", "-")
-    assert code == 0 and rec["status"] == "found"
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(f.product())))
+    code, rec, _ = cli("record", "create", "product", "--file", "-")
+    assert code == 0 and rec["status"] == "qualified"
 
 
 def test_cli_create_invalid_is_non_zero_with_readable_error(cli):
-    d = f.demand()
-    del d["fetched_at"]
-    code, _, err = cli("record", "create", "problem", "--file", "@body", body=f.problem(demand=[d]))
+    e = f.evidence()
+    del e["fetched_at"]
+    code, _, err = cli("record", "create", "evidence", "--file", "@body", body=e)
     assert code == 1
     assert "fetched_at" in err
+
+
+# --- demand is CLI-managed (R5): only `demand fetch` writes it -------------
+
+
+@pytest.mark.parametrize("field", ["demand", "pending_fetch"])
+def test_record_create_problem_with_demand_or_pending_fetch_is_refused(store, ws, cli, field):
+    body = f.problem()
+    if field == "pending_fetch":
+        body = {**{k: v for k, v in body.items() if k != "demand"}, "status": "pending_evidence",
+                "pending_fetch": {"adapter": "example_adapter", "error": "timeout",
+                                  "attempted_at": "2026-01-05T10:00:00Z"}}
+    with pytest.raises(RecordError, match="demand fetch"):
+        store.create("problem", body)
+    code, _, err = cli("record", "create", "problem", "--file", "@body", body=body)
+    assert code == 1 and "demand fetch" in err
+    assert json.loads(err)["error"]["kind"] == "invalid_record"
+    assert not list(ws.rglob("*.json"))
+
+
+@pytest.mark.parametrize("field", ["demand", "pending_fetch"])
+def test_record_update_or_transition_cannot_set_demand(store, field):
+    rec = store.create_managed("problem", f.problem())
+    value = [f.demand()] if field == "demand" else {
+        "adapter": "example_adapter", "error": "timeout", "attempted_at": "2026-01-05T10:00:00Z"}
+    with pytest.raises(RecordError):
+        store.update("problem", rec["id"], {field: value})
+    with pytest.raises(RecordError):
+        store.transition("problem", rec["id"], "rejected", {field: value})
+    assert store.get("problem", rec["id"]) == rec
 
 
 def test_cli_event_and_transition(cli):
@@ -433,12 +463,12 @@ def test_cli_event_and_transition(cli):
 def test_cli_lock_held_exits_with_lock_message(cli, ws, monkeypatch):
     monkeypatch.setattr(state, "LOCK_WAIT_SECONDS", 0)
     _hold_lock(ws, state.now_utc, 3600)
-    code, _, err = cli("record", "create", "problem", "--file", "@body", body=f.problem())
+    code, _, err = cli("record", "create", "product", "--file", "@body", body=f.product())
     assert code == 3 and "locked" in err
 
 
-def test_cli_validate_clean_workspace_passes(cli):
-    cli("record", "create", "problem", "--file", "@body", body=f.problem())
+def test_cli_validate_clean_workspace_passes(cli, store):
+    store.create_managed("problem", f.problem())
     code, out, _ = cli("validate")
     assert code == 0 and out["ok"] is True and out["checked"] == 1
 

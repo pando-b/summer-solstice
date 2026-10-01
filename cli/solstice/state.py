@@ -8,6 +8,10 @@ Layout under the workspace root::
     .solstice/write.lock.guard            advisory lock serializing expired-lock reclaim
 
 Every write goes through `Store`, which holds the lock while it writes.
+`record` commands use `create`/`update`/`transition`, which refuse
+CLI-managed fields. Modules that own such fields (`demand fetch` writes
+`demand` and `pending_fetch` and the run spend ledger) use `create_managed`,
+or take `lock()` themselves and call `insert_locked`/`put_locked`.
 """
 
 from __future__ import annotations
@@ -63,15 +67,21 @@ _IDENTITY = ("id", "schema_version", "created_at", "updated_at")
 # Set only by U9's approve/reject flow, never at creation or by update.
 _APPROVAL_FLOW_FIELDS = ("approver", "approved_at", "content_hash")
 
+# Every demand number enters through `demand fetch` (R5), and the run spend
+# ledger is written only by `demand fetch` and `run start|finish` (R22).
+FETCH_FIELDS = ("demand", "pending_fetch")
 _MANAGED: dict[str, tuple[str, ...]] = {
-    "problem": ("status", "refetch_failures"),
+    "problem": ("status", "refetch_failures", *FETCH_FIELDS),
     "product": ("status", "test_started_at", "awaiting_owner_from"),
     "approval": ("status", *_APPROVAL_FLOW_FIELDS),
     "evidence": ("url", "fetched_at", "idempotency_key"),
+    "run": ("status", "spend_usd", "adapter_status", "finished_at"),
 }
 # Managed against `update`, but the caller supplies them when creating the record.
 _CALLER_PROVENANCE: dict[str, tuple[str, ...]] = {"evidence": ("url", "fetched_at")}
-_RESERVED_EVENTS = {"created", "updated", "transition", "migrated", "refetch_failed"}
+_RESERVED_EVENTS = {"created", "updated", "transition", "migrated", "refetch_failed",
+                    "demand_fetched", "fetch_failed", "spend_reserved", "spend_booked",
+                    "adapter_unavailable", "run_finished"}
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -343,6 +353,23 @@ class Store:
     def create(self, entity: str, body: dict) -> dict:
         if not isinstance(body, dict):
             raise RecordError("record body must be a JSON object")
+        if entity == "approval" and any(body.get(k) is not None for k in _APPROVAL_FLOW_FIELDS):
+            raise RecordError("approver, approved_at and content_hash are set by the approvals flow")
+        managed = [k for k in body if k in _MANAGED.get(entity, ())
+                   and k not in ("status", *_CALLER_PROVENANCE.get(entity, ()))]
+        if managed:
+            raise RecordError(f"cannot set {', '.join(managed)} when creating a {entity} "
+                              f"(lifecycle-managed; set by `record transition` or the CLI"
+                              f"{_fetch_hint(entity, managed)})")
+        return self.create_managed(entity, body)
+
+    def create_managed(self, entity: str, body: dict) -> dict:
+        """Create a record whose body may carry CLI-managed fields.
+
+        For CLI modules that own those fields (`demand fetch`, `run start`);
+        the `record` command never calls this, so R5 holds at its surface."""
+        if not isinstance(body, dict):
+            raise RecordError("record body must be a JSON object")
         clash = [k for k in _IDENTITY if k in body]
         if clash:
             raise RecordError(f"fields set by the CLI cannot be supplied: {', '.join(clash)}")
@@ -350,26 +377,24 @@ class Store:
         if initial is not None and body.get("status") not in initial:
             raise RecordError(f"a new {entity} must start in {' or '.join(sorted(initial))}; "
                               f"later statuses are reached through `record transition`")
-        if entity == "approval" and any(body.get(k) is not None for k in _APPROVAL_FLOW_FIELDS):
-            raise RecordError("approver, approved_at and content_hash are set by the approvals flow")
-        managed = [k for k in body if k in _MANAGED.get(entity, ())
-                   and k not in ("status", *_CALLER_PROVENANCE.get(entity, ()))]
-        if managed:
-            raise RecordError(f"cannot set {', '.join(managed)} when creating a {entity} "
-                              f"(lifecycle-managed; set by `record transition` or the CLI)")
         with self.lock():
-            now = self.now()
-            rec = {"id": new_ulid(now), "schema_version": SCHEMA_VERSION,
-                   "created_at": fmt_ts(now), "updated_at": fmt_ts(now), **body}
-            if entity == "evidence":
-                rec["idempotency_key"] = evidence_key(rec)
-                for existing in self.list("evidence"):
-                    if existing.get("idempotency_key") == rec["idempotency_key"]:
-                        return existing
-            self._check(entity, rec)
-            self._write(entity, rec)
-            self._append(entity, rec["id"], {"type": "created"})
-            return rec
+            return self.insert_locked(entity, body)
+
+    def insert_locked(self, entity: str, body: dict) -> dict:
+        """Write a new record; the caller has checked the body and holds
+        `self.lock()`. Evidence is idempotent on URL plus fetch date."""
+        now = self.now()
+        rec = {"id": new_ulid(now), "schema_version": SCHEMA_VERSION,
+               "created_at": fmt_ts(now), "updated_at": fmt_ts(now), **body}
+        if entity == "evidence":
+            rec["idempotency_key"] = evidence_key(rec)
+            for existing in self.list("evidence"):
+                if existing.get("idempotency_key") == rec["idempotency_key"]:
+                    return existing
+        self._check(entity, rec)
+        self._write(entity, rec)
+        self._append(entity, rec["id"], {"type": "created"})
+        return rec
 
     def update(self, entity: str, rid: str, patch: dict) -> dict:
         if not isinstance(patch, dict) or not patch:
@@ -377,7 +402,8 @@ class Store:
         blocked = [k for k in patch if k in _IDENTITY or k in _MANAGED.get(entity, ())]
         if blocked:
             raise RecordError(f"cannot update {', '.join(blocked)} on {entity} "
-                              f"(identity or lifecycle-managed; use `record transition`)")
+                              f"(identity or lifecycle-managed; use `record transition`"
+                              f"{_fetch_hint(entity, blocked)})")
         with self.lock():
             rec = {**self.get(entity, rid), **patch, "updated_at": fmt_ts(self.now())}
             self._check(entity, rec)
@@ -390,7 +416,8 @@ class Store:
         reason = fields.pop("reason", None)
         blocked = [k for k in fields if k in _IDENTITY or k in _MANAGED.get(entity, ())]
         if blocked:
-            raise RecordError(f"transition cannot set {', '.join(blocked)}")
+            raise RecordError(f"transition cannot set {', '.join(blocked)}"
+                              f"{_fetch_hint(entity, blocked)}")
         with self.lock():
             rec = self.get(entity, rid)
             ctx = lifecycle.Context(
@@ -522,6 +549,17 @@ class Store:
                 migrated.append(rec["id"])
         return migrated, errors
 
+    def put_locked(self, entity: str, rec: dict, *events: dict) -> dict:
+        """Validate and write a whole record, appending `events` to its history.
+
+        For CLI modules that own managed fields; the caller holds `self.lock()`."""
+        rec = {**rec, "updated_at": fmt_ts(self.now())}
+        self._check(entity, rec)
+        self._write(entity, rec)
+        for event in events:
+            self._append(entity, rec["id"], event)
+        return rec
+
     # internals
 
     def _check(self, entity: str, rec: dict) -> None:
@@ -542,6 +580,14 @@ class Store:
         path = self._events_path(entity, rid)
         with path.open("a") as fh:
             fh.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def _fetch_hint(entity: str, fields) -> str:
+    if entity == "problem" and any(f in FETCH_FIELDS for f in fields):
+        return "; demand and pending_fetch are written only by `solstice demand fetch` (R5)"
+    if entity == "run" and any(f != "status" for f in fields):
+        return "; the run spend ledger is written only by `demand fetch` and `run start|finish`"
+    return ""
 
 
 def evidence_key(rec: dict) -> str:

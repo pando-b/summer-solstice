@@ -41,8 +41,24 @@ FAKE = {
     "credential-assignment": "api_key = '" + _tok(24) + "'",
     "credential-assignment-unquoted": "API_TO" + "KEN=" + "abcdefghijklmnopqrstuvwx",
     "credential-assignment-yaml": "pass" + "word: " + _tok(24) + "  # synthetic",
+    "secrets-manager-id": "workspace" + "Id: \"" + "a1b2c3d4-e5f6-4890-abcd-ef1234567890" + "\"",
+    "secrets-manager-id-json": "\"project" + "Id\": \"" + "65f0c0ffee1234567890abcd" + "\"",
+    "secrets-manager-id-env": "INFIS" + "ICAL_PROJECT_ID=" + "a1b2c3d4e5f6a7b8",
+    "api-key-header": "x-api" + "-key: " + _tok(32),
+    "api-key-header-json": "\"x-api" + "-key\": \"" + _tok(32) + "\"",
+    "authorization-header": "Authorization: " + "Bea" + "rer " + _tok(32),
+    "authorization-header-basic": "\"Authori" + "zation\": \"Ba" + "sic " + _tok(28) + "==\"",
 }
-RULE_OF = {k: k.removesuffix("-test").removesuffix("-unquoted").removesuffix("-yaml") for k in FAKE}
+_SUFFIXES = ("-test", "-unquoted", "-yaml", "-json", "-env", "-basic")
+
+
+def _rule_of(name: str) -> str:
+    for suffix in _SUFFIXES:
+        name = name.removesuffix(suffix)
+    return name
+
+
+RULE_OF = {k: _rule_of(k) for k in FAKE}
 
 
 # --- secret patterns --------------------------------------------------------
@@ -60,6 +76,10 @@ def test_each_secret_pattern_fires(name):
     "sk_and_rk_prefixes_are_documented_here",  # no digits/mixed case token
     "token = os.environ['EXAMPLE_TOKEN']",
     "polar_api",
+    'headers = {"x-api-key": creds[KEY_NAME]}',
+    '"Authorization": f"Bearer {creds[KEY_NAME]}"',
+    "workspaceId: <your-workspace-id>",
+    "projectId = None",
 ])
 def test_benign_strings_do_not_fire(text):
     assert leakscan.scan_secrets(text) == []
@@ -110,6 +130,15 @@ def test_fixture_without_marker_fails_and_with_marker_passes(tmp_path):
     (fx / "good.json").write_text(json.dumps({"_fixture": MARKER, "name": "example"}))
     findings = leakscan.scan_tree(tmp_path)
     assert [(f.rule, f.where) for f in findings] == [("fixture-marker", "cli/tests/fixtures/bad.json")]
+
+
+@pytest.mark.parametrize("name", ["secrets-manager-id", "api-key-header"])
+def test_tracked_secrets_manager_id_or_api_key_header_is_a_finding(tmp_path, name):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text(f"example: 1\n{FAKE[name]}\n")
+    findings = leakscan.scan_tree(tmp_path)
+    assert RULE_OF[name] in _rules(findings)
+    assert FAKE[name] not in "\n".join(map(str, findings))
 
 
 def test_fake_stripe_key_in_fixture_fails_ci(tmp_path):
