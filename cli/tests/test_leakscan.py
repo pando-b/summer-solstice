@@ -14,8 +14,10 @@ from pathlib import Path
 
 import pytest
 
+import factories as f
 from solstice import leakscan
 from solstice.__main__ import main
+from solstice.state import SCHEMA_VERSION, validate_record
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ZERO = "0" * 40
@@ -37,8 +39,10 @@ FAKE = {
     "aws-access-key-id": "AK" + "IA" + "ABCDEFGHIJ234567",
     "github-token": "gh" + "p_" + _tok(36),
     "credential-assignment": "api_key = '" + _tok(24) + "'",
+    "credential-assignment-unquoted": "API_TO" + "KEN=" + "abcdefghijklmnopqrstuvwx",
+    "credential-assignment-yaml": "pass" + "word: " + _tok(24) + "  # synthetic",
 }
-RULE_OF = {k: k.removesuffix("-test") for k in FAKE}
+RULE_OF = {k: k.removesuffix("-test").removesuffix("-unquoted").removesuffix("-yaml") for k in FAKE}
 
 
 # --- secret patterns --------------------------------------------------------
@@ -155,6 +159,32 @@ def test_real_repo_tree_passes():
     assert findings == [], "\n".join(map(str, findings))
 
 
+def test_oversized_text_file_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(leakscan, "MAX_SCAN_BYTES", 64)
+    (tmp_path / "big.txt").write_text("synthetic line\n" * 20)
+    (tmp_path / "big.bin").write_bytes(b"\0\1\2" * 100)
+    (tmp_path / "small.txt").write_text("ok\n")
+    findings = leakscan.scan_tree(tmp_path)
+    assert [(f.rule, f.where) for f in findings] == [("unscannable-file", "big.txt")]
+
+
+def test_unreadable_file_fails_closed(tmp_path):
+    p = tmp_path / "locked.txt"
+    p.write_text("synthetic\n")
+    p.chmod(0)
+    try:
+        if os.access(p, os.R_OK):
+            pytest.skip("running with privileges that ignore file modes")
+        assert "unscannable-file" in _rules(leakscan.scan_tree(tmp_path))
+    finally:
+        p.chmod(0o644)
+
+
+def test_symlinks_are_still_skipped(tmp_path):
+    (tmp_path / "link").symlink_to("/nonexistent-synthetic-target")
+    assert leakscan.scan_tree(tmp_path) == []
+
+
 def test_cli_tree_exit_codes(tmp_path, capsys):
     assert main(["leakscan", "tree", str(tmp_path)]) == 0
     (tmp_path / "x.events.jsonl").write_text("")
@@ -177,8 +207,12 @@ def test_terms_come_from_denylist_records_and_name_candidates(tmp_path):
     ws = _ws(tmp_path)
     prod = ws / "records" / "products"
     prod.mkdir(parents=True)
-    (prod / "01HXEXAMPLE.json").write_text(json.dumps(
-        {"name": "Quillmarrow Ledger", "slug": "quillmarrow-ledger", "domain": "quillmarrow.example"}))
+    rec = {"id": "01JAAAAAAAAAAAAAAAAAAAAAAA", "schema_version": SCHEMA_VERSION,
+           "created_at": "2026-01-05T12:00:00Z", "updated_at": "2026-01-05T12:00:00Z",
+           **f.product(name="Quillmarrow Ledger", slug="quillmarrow-ledger",
+                       domains=["quillmarrow.example"])}
+    assert validate_record("product", rec) == []
+    (prod / "01HXEXAMPLE.json").write_text(json.dumps(rec))
     (prod / "01HXEXAMPLE.events.jsonl").write_text('{"type": "created"}\n')
     cand = ws / "products" / "brindlewick-app"
     cand.mkdir(parents=True)
@@ -337,6 +371,46 @@ def test_unknown_remote_sha_falls_back_to_remote_exclusion(repo, tmp_path, monke
     sha = _commit(repo, f"about {TERM}")
     unknown = "1" * 40
     assert _run_hook(monkeypatch, repo, _push_line(repo, sha, unknown), _ws(tmp_path)) == 1
+
+
+def test_commit_reachable_only_from_another_remote_is_scanned(repo, tmp_path, monkeypatch):
+    for name in ("origin", "private"):
+        bare = tmp_path / f"{name}.git"
+        _git("init", "-q", "--bare", str(bare), cwd=tmp_path)
+        _git("remote", "add", name, str(bare), cwd=repo)
+    _git("push", "-q", "origin", "main", cwd=repo)
+    _git("checkout", "-q", "-b", "feature", cwd=repo)
+    bad = _commit(repo, f"private notes on {TERM}")
+    _git("push", "-q", "private", "feature", cwd=repo)  # tracking ref holds the commit
+    line = _push_line(repo, bad, ZERO, ref="refs/heads/feature")
+    assert _run_hook(monkeypatch, repo, line, _ws(tmp_path)) == 1
+    assert bad in leakscan.commits_in_push(repo, [line], remote="origin")
+    assert bad in leakscan.commits_in_push(repo, [line])  # no remote name: full history
+
+
+@pytest.mark.parametrize("prefix", ["++ ", "++ b/", "+++ "])
+def test_added_line_that_looks_like_a_diff_header_is_scanned(repo, tmp_path, monkeypatch, capsys, prefix):
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    body = f"hello\n{prefix}token {FAKE['aws-access-key-id']}\nclean tail\n"
+    sha = _commit(repo, "add notes", {"a.md": body})
+    assert _run_hook(monkeypatch, repo, _push_line(repo, sha, base), _ws(tmp_path)) == 1
+    err = capsys.readouterr().err
+    assert "aws-access-key-id" in err and f"{sha[:12]} a.md" in err
+    assert FAKE["aws-access-key-id"] not in err
+
+
+@pytest.mark.parametrize("rel,rule", [
+    ("d \u00e9/q.events.jsonl", "event-file"),
+    ("d e/q.events.jsonl", "event-file"),
+    ("sp ace/.solstice/config.yaml", "workspace-config"),
+    ("caf\u00e9/records/x.json", "records-dir"),
+])
+def test_quoted_or_spaced_paths_hit_path_rules(repo, tmp_path, monkeypatch, capsys, rel, rule):
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    sha = _commit(repo, "add data", {rel: "{}\n"})
+    assert _run_hook(monkeypatch, repo, _push_line(repo, sha, base), _ws(tmp_path)) == 1
+    err = capsys.readouterr().err
+    assert rule in err and rel in err
 
 
 def test_malformed_stdin_blocks(repo, tmp_path, monkeypatch):

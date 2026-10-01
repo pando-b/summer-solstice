@@ -35,6 +35,13 @@
       "type": "string",
       "minLength": 1
     },
+    "domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "shape": {
       "type": "string"
     },

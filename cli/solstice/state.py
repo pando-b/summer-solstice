@@ -24,6 +24,7 @@ import yaml
 from jsonschema import Draft202012Validator
 
 from solstice import lifecycle
+from solstice.lifecycle import fmt_ts, parse_ts  # noqa: F401  (re-exported)
 
 SCHEMA_VERSION = 1
 
@@ -56,12 +57,17 @@ LOCK_WAIT_SECONDS = 10.0
 
 _IDENTITY = ("id", "schema_version", "created_at", "updated_at")
 # Fields only the lifecycle (or a later approvals module) may set.
+# Set only by U9's approve/reject flow, never at creation or by update.
+_APPROVAL_FLOW_FIELDS = ("approver", "approved_at", "content_hash")
+
 _MANAGED: dict[str, tuple[str, ...]] = {
     "problem": ("status", "refetch_failures"),
     "product": ("status", "test_started_at", "awaiting_owner_from"),
-    "approval": ("status", "approver", "approved_at", "content_hash"),
+    "approval": ("status", *_APPROVAL_FLOW_FIELDS),
     "evidence": ("url", "fetched_at", "idempotency_key"),
 }
+# Managed against `update`, but the caller supplies them when creating the record.
+_CALLER_PROVENANCE: dict[str, tuple[str, ...]] = {"evidence": ("url", "fetched_at")}
 _RESERVED_EVENTS = {"created", "updated", "transition", "migrated", "refetch_failed"}
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -79,14 +85,6 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
-def fmt_ts(dt: datetime) -> str:
-    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
-
-
-def parse_ts(value: str) -> datetime:
-    return datetime.fromisoformat(value).astimezone(UTC)
-
-
 def new_ulid(at: datetime | None = None) -> str:
     ms = int((at or now_utc()).timestamp() * 1000)
     n = (ms << 80) | int.from_bytes(os.urandom(10), "big")
@@ -96,10 +94,14 @@ def new_ulid(at: datetime | None = None) -> str:
 # --- schemas and validation -------------------------------------------------
 
 
-@cache
-def load_schema(entity: str) -> dict:
+def _require_entity(entity: str) -> None:
     if entity not in ENTITIES:
         raise RecordError(f"unknown entity {entity!r}; expected one of {', '.join(ENTITIES)}")
+
+
+@cache
+def load_schema(entity: str) -> dict:
+    _require_entity(entity)
     text = (resources.files("solstice") / "schemas" / f"{entity}.schema.json").read_text()
     return json.loads(text)
 
@@ -138,14 +140,14 @@ def _decision_rules(rec: dict) -> list[str]:
     return errs
 
 
-def _event_validator(entity: str, event: dict) -> list[str]:
+def _event_errors(entity: str, event: dict) -> list[str]:
     if not isinstance(event.get("type"), str) or not event["type"]:
         return ["event needs a non-empty string 'type'"]
     if event["type"] in _RESERVED_EVENTS:
         return [f"event type {event['type']!r} is written by the CLI, not by callers"]
     if entity == "product" and event["type"] == "buy_signal":
-        sub = dict(load_schema("product")["$defs"]["buy_signal"])
-        sub["$defs"] = load_schema("product")["$defs"]
+        defs = load_schema("product")["$defs"]
+        sub = {**defs["buy_signal"], "$defs": defs}
         return [f"buy_signal {'/'.join(map(str, e.absolute_path)) or '(event)'}: {e.message}"
                 for e in Draft202012Validator(sub).iter_errors(event)]
     return []
@@ -242,8 +244,7 @@ class Store:
     # paths
 
     def dir(self, entity: str) -> Path:
-        if entity not in ENTITIES:
-            raise RecordError(f"unknown entity {entity!r}; expected one of {', '.join(ENTITIES)}")
+        _require_entity(entity)
         return self.workspace / "records" / ENTITIES[entity]
 
     def _path(self, entity: str, rid: str) -> Path:
@@ -296,8 +297,13 @@ class Store:
         if initial is not None and body.get("status") not in initial:
             raise RecordError(f"a new {entity} must start in {' or '.join(sorted(initial))}; "
                               f"later statuses are reached through `record transition`")
-        if entity == "approval" and any(body.get(k) is not None for k in _MANAGED["approval"][1:]):
+        if entity == "approval" and any(body.get(k) is not None for k in _APPROVAL_FLOW_FIELDS):
             raise RecordError("approver, approved_at and content_hash are set by the approvals flow")
+        managed = [k for k in body if k in _MANAGED.get(entity, ())
+                   and k not in ("status", *_CALLER_PROVENANCE.get(entity, ()))]
+        if managed:
+            raise RecordError(f"cannot set {', '.join(managed)} when creating a {entity} "
+                              f"(lifecycle-managed; set by `record transition` or the CLI)")
         with self.lock():
             now = self.now()
             rec = {"id": new_ulid(now), "schema_version": SCHEMA_VERSION,
@@ -372,7 +378,7 @@ class Store:
         with self.lock():
             self.get(entity, rid)
             event = {**event, "at": event.get("at") or fmt_ts(self.now())}
-            errs = _event_validator(entity, event)
+            errs = _event_errors(entity, event)
             if errs:
                 raise RecordError("; ".join(errs))
             self._append(entity, rid, event, stamp=False)

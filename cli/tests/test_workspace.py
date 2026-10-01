@@ -1,6 +1,5 @@
 """Workspace resolution fails closed and refuses the public plugin repo (KTD3)."""
 
-from pathlib import Path
 
 import pytest
 
@@ -58,6 +57,42 @@ def test_env_var_symlink_into_plugin_checkout_is_refused(tmp_path, make_checkout
     link.symlink_to(checkout, target_is_directory=True)
     with pytest.raises(WorkspaceError, match=BOUNDARY):
         resolve_workspace(cwd=tmp_path, env={"SOLSTICE_WORKSPACE": str(link)})
+
+
+# --- the boundary check itself fails closed --------------------------------
+
+
+def _fake_git(tmp_path, stderr: str, code: int):
+    script = tmp_path / "bin" / "git"
+    script.parent.mkdir()
+    script.write_text(f"#!/bin/sh\necho {stderr!r} >&2\nexit {code}\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+def test_missing_git_refuses(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setattr("solstice.workspace.shutil.which", lambda name, *a, **k: None)
+    with pytest.raises(WorkspaceError, match="git"):
+        resolve_workspace(cwd=tmp_path, env={"SOLSTICE_WORKSPACE": str(ws)})
+
+
+def test_git_error_other_than_not_a_repo_refuses(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    git = _fake_git(tmp_path, "fatal: detected dubious ownership in repository", 128)
+    monkeypatch.setattr("solstice.workspace.shutil.which", lambda name, *a, **k: git)
+    with pytest.raises(WorkspaceError, match="dubious ownership"):
+        resolve_workspace(cwd=tmp_path, env={"SOLSTICE_WORKSPACE": str(ws)})
+
+
+def test_not_a_git_repository_is_a_clean_miss(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    git = _fake_git(tmp_path, "fatal: not a git repository (or any of the parent directories): .git", 128)
+    monkeypatch.setattr("solstice.workspace.shutil.which", lambda name, *a, **k: git)
+    assert resolve_workspace(cwd=tmp_path, env={"SOLSTICE_WORKSPACE": str(ws)}) == ws.resolve()
 
 
 # --- .solstice/config.yaml ------------------------------------------------

@@ -170,9 +170,10 @@ def run_checks(p: Probes) -> dict:
     checks.append(_check("infisical", OK if inf else OPTIONAL,
                          inf or "not installed; keys can still come from the environment"))
     plugins = _installed_plugins(p.home)
+    has_ce = "compound-engineering" in plugins
     checks.append(_check("compound-engineering plugin",
-                         OK if "compound-engineering" in plugins else REQUIRED,
-                         "installed" if "compound-engineering" in plugins else
+                         OK if has_ce else REQUIRED,
+                         "installed" if has_ce else
                          "not installed; build delegates to it (find and qualify run without it)"))
     if p.which("impeccable"):
         checks.append(_check("impeccable", OK, "installed"))

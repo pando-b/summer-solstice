@@ -11,7 +11,7 @@ Two entry points:
   against the private term list and the secret patterns.
 
 The term list comes from the private workspace: ``denylist.txt`` plus the
-name, slug, and domain fields of every ``records/products/*.json`` and the
+name, slug, and domains fields of every ``records/products/*.json`` and the
 candidate names in every ``products/*/name-candidates.md``. If it cannot be
 loaded the push is blocked (fail closed).
 
@@ -21,6 +21,7 @@ redacted.
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
@@ -47,8 +48,10 @@ SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("private-key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
     ("aws-access-key-id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}")),
+    # Quoted, or unquoted up to whitespace, a quote, a comment, or end of line.
     ("credential-assignment", re.compile(
-        r"(?i)(?:api[_-]?key|secret|token|password)[\"']?\s*[:=]\s*[\"'][A-Za-z0-9_\-]{20,}[\"']")),
+        r"(?i)(?:api[_-]?key|secret|token|password)[\"']?\s*[:=]\s*"
+        r"(?:[\"'][A-Za-z0-9_\-]{20,}[\"']|[A-Za-z0-9_\-]{20,}(?=[\s\"'#]|$))", re.MULTILINE)),
 ]
 
 
@@ -122,14 +125,23 @@ def _list_files(root: Path) -> tuple[list[str], list[str]]:
     return sorted(files), sorted(dirs)
 
 
-def _read_text(path: Path) -> str | None:
+def _read_text(path: Path) -> tuple[str | None, str | None]:
+    """(text, why it could not be scanned). Symlinks, missing files, and
+    oversized binaries are skipped; an oversized or unreadable text file is
+    reported so the check fails closed."""
     try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_SCAN_BYTES:
-            return None
+        if path.is_symlink() or not path.is_file():
+            return None, None
+        size = path.stat().st_size
+        if size > MAX_SCAN_BYTES:
+            with path.open("rb") as fh:
+                if b"\0" in fh.read(8192):
+                    return None, None
+            return None, f"{size} bytes exceeds the {MAX_SCAN_BYTES}-byte scan limit"
         data = path.read_bytes()
-    except OSError:
-        return None
-    return data.decode("utf-8", errors="replace")
+    except OSError as exc:
+        return None, f"cannot read: {exc.strerror or exc}"
+    return data.decode("utf-8", errors="replace"), None
 
 
 def scan_tree(root: Path | str) -> list[Finding]:
@@ -141,7 +153,9 @@ def scan_tree(root: Path | str) -> list[Finding]:
             findings.append(Finding("records-dir", d + "/", "workspace records never enter this repo"))
     for rel in files:
         findings += path_findings(rel)
-        text = _read_text(root / rel)
+        text, unscannable = _read_text(root / rel)
+        if unscannable:
+            findings.append(Finding("unscannable-file", rel, unscannable))
         if rel.startswith(FIXTURE_PREFIX) and not rel.endswith(".gitkeep") and (
                 text is None or FIXTURE_MARKER not in text):
             findings.append(Finding("fixture-marker", rel, f"fixture lacks {FIXTURE_MARKER!r}"))
@@ -188,7 +202,7 @@ def load_terms(workspace: Path) -> list[str]:
             data = json.loads(rec.read_text())
         except (OSError, ValueError) as exc:
             raise LeakscanError(f"cannot read product record {rec.name}: {exc}") from exc
-        for field in ("name", "slug", "domain"):
+        for field in ("name", "slug"):
             if isinstance(data.get(field), str):
                 terms.append(data[field])
         if isinstance(data.get("domains"), list):
@@ -272,8 +286,15 @@ def _has_commit(repo: Path, sha: str) -> bool:
         return False
 
 
-def commits_in_push(repo: Path, lines: Iterable[str]) -> list[str]:
+def commits_in_push(repo: Path, lines: Iterable[str], remote: str | None = None) -> list[str]:
+    """Commits the push would send. A new branch (or an unknown remote SHA)
+    excludes only what the destination remote's tracking refs already hold;
+    with no known remote name the whole history of the pushed SHA is scanned."""
+    exclude: list[str] = []
+    if remote and re.fullmatch(r"[A-Za-z0-9._-]+", remote) and remote in _git(repo, "remote").split():
+        exclude = ["--not", f"--remotes={remote}"]
     commits: list[str] = []
+    seen: set[str] = set()
     for line in lines:
         if not line.strip():
             continue
@@ -284,37 +305,53 @@ def commits_in_push(repo: Path, lines: Iterable[str]) -> list[str]:
         if _is_zero(local_sha):
             continue  # branch deletion: nothing new leaves this machine
         if _is_zero(remote_sha) or not _has_commit(repo, remote_sha):
-            spec = [local_sha, "--not", "--remotes"]
+            spec = [local_sha, *exclude]
         else:
             spec = [f"{remote_sha}..{local_sha}"]
         for sha in _git(repo, "rev-list", *spec).split():
-            if sha not in commits:
+            if sha not in seen:
+                seen.add(sha)
                 commits.append(sha)
     return commits
 
 
+def _header_path(raw: str) -> str:
+    raw = raw.rstrip("\t")
+    if raw.startswith('"') and raw.endswith('"'):
+        raw = codecs.escape_decode(raw[1:-1].encode("utf-8"))[0].decode("utf-8", "replace")
+    return raw[2:] if raw.startswith("b/") else raw
+
+
 def _added(repo: Path, sha: str) -> tuple[list[str], list[tuple[str, str]]]:
-    """(added paths, [(path, added line)]) for a commit against its first parent."""
-    diff = _git(repo, "show", "--format=", "-p", "-U0", "--no-color", "--no-ext-diff",
-                "--no-renames", "--text", "--diff-merges=first-parent", sha)
-    paths: list[str] = []
+    """(added paths, [(path, added line)]) for a commit against its first parent.
+
+    Paths come from NUL-delimited diff-tree output, so quoting never hides them.
+    In the patch, '+++ ' is a file header only between 'diff --git ' and the
+    first '@@'; inside a hunk every '+' line is added content."""
+    names = _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z",
+                 "--diff-filter=ACMR", "--no-renames", "--root", "-m", "--first-parent", sha)
+    paths = list(dict.fromkeys(p for p in names.split("\0") if p))
+    diff = _git(repo, "-c", "core.quotePath=false", "show", "--format=", "-p", "-U0", "--no-color",
+                "--no-ext-diff", "--no-renames", "--text", "--diff-merges=first-parent", sha)
     lines: list[tuple[str, str]] = []
-    current = ""
+    current, in_hunk = "", False
     for ln in diff.splitlines():
-        if ln.startswith("+++ "):
-            current = ln[4:]
-            current = current[2:] if current.startswith("b/") else current
-            if current != "/dev/null":
-                paths.append(current)
-        elif ln.startswith("+") and current:
-            lines.append((current, ln[1:]))
+        if ln.startswith("diff --git "):
+            current, in_hunk = "", False
+        elif not in_hunk and ln.startswith("+++ "):
+            current = _header_path(ln[4:])
+        elif ln.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and ln.startswith("+"):
+            lines.append((current or "(unknown path)", ln[1:]))
     return paths, lines
 
 
-def scan_push(repo: Path, lines: Iterable[str], terms: list[str]) -> list[Finding]:
+def scan_push(repo: Path, lines: Iterable[str], terms: list[str],
+              remote: str | None = None) -> list[Finding]:
     compiled = compile_terms(terms)
     findings: list[Finding] = []
-    for sha in commits_in_push(repo, lines):
+    for sha in commits_in_push(repo, lines, remote):
         short = sha[:12]
         message = _git(repo, "log", "-1", "--format=%B", sha)
         for t in match_terms(compiled, message):

@@ -99,19 +99,26 @@ def _read_config(cfg: Path, base: Path) -> Path:
 
 def refuse_plugin_checkout(path: Path) -> None:
     """Raise if `path` is inside any checkout (including outer, enclosing
-    checkouts of a nested repo) whose remote is the plugin repo."""
+    checkouts of a nested repo) whose remote is the plugin repo.
+
+    Fails closed: if git is missing or errors for any reason other than
+    "not a git repository", the path is refused."""
     git = shutil.which("git")
     if git is None:
-        return
+        raise WorkspaceError(
+            f"refusing: git is not installed or not on PATH, so workspace path {path} "
+            f"cannot be checked against the public plugin repo ({PLUGIN_REPO})"
+        )
     git_env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_OVERRIDES}
+    git_env["LC_ALL"] = "C"  # stable error text for the "not a git repository" check
 
     probe: Path | None = path
     while probe is not None:
-        top = _git(git, probe, git_env, "rev-parse", "--show-toplevel")
-        if not top:
+        top = _git(git, probe, path, git_env, "rev-parse", "--show-toplevel")
+        if top is None:
             return
         toplevel = Path(top).resolve()
-        remotes = _git(git, toplevel, git_env, "remote", "-v") or ""
+        remotes = _git(git, toplevel, path, git_env, "remote", "-v") or ""
         for line in remotes.splitlines():
             parts = line.split()
             if len(parts) >= 2 and is_plugin_remote(parts[1]):
@@ -124,13 +131,23 @@ def refuse_plugin_checkout(path: Path) -> None:
         probe = parent if parent != toplevel else None
 
 
-def _git(git: str, cwd: Path, env: dict[str, str], *args: str) -> str | None:
+def _git(git: str, cwd: Path, path: Path, env: dict[str, str], *args: str) -> str | None:
+    """stdout of a git command; None only when `cwd` is not in a git repository.
+    Any other failure raises, so the boundary check fails closed."""
     try:
         out = subprocess.run(
             [git, *args], cwd=cwd, env=env, capture_output=True, text=True, check=False
         )
-    except OSError:
-        return None
+    except OSError as exc:
+        raise WorkspaceError(
+            f"refusing: could not run git to check workspace path {path} "
+            f"against the public plugin repo: {exc}"
+        ) from exc
     if out.returncode != 0:
-        return None
+        if "not a git repository" in out.stderr.lower():
+            return None
+        raise WorkspaceError(
+            f"refusing: `git {' '.join(args)}` failed in {cwd} while checking workspace path "
+            f"{path} against the public plugin repo: {out.stderr.strip() or f'exit {out.returncode}'}"
+        )
     return out.stdout.strip()

@@ -67,6 +67,22 @@ def test_create_refuses_caller_supplied_identity_fields(store):
         store.create("problem", f.problem(id="01JAAAAAAAAAAAAAAAAAAAAAAA"))
 
 
+@pytest.mark.parametrize("entity,body", [
+    ("problem", {**{k: v for k, v in f.problem().items() if k != "demand"},
+                 "status": "pending_evidence", "refetch_failures": 3, "pending_fetch": {
+                     "adapter": "example_adapter", "error": "timeout",
+                     "attempted_at": "2026-01-05T10:00:00Z"}}),
+    ("product", f.product(test_started_at="2026-01-05T12:00:00Z")),
+    ("product", f.product(awaiting_owner_from="testing")),
+    ("approval", f.approval(approver="someone")),
+    ("evidence", f.evidence(idempotency_key="https://example.com/x|2026-01-04")),
+])
+def test_create_refuses_lifecycle_managed_fields(store, ws, entity, body):
+    with pytest.raises(RecordError, match="lifecycle|approvals flow|set by the CLI"):
+        store.create(entity, body)
+    assert not list(ws.rglob("*.json"))
+
+
 def test_get_unknown_id_is_a_readable_error(store):
     with pytest.raises(RecordError, match="not found"):
         store.get("problem", "01JAAAAAAAAAAAAAAAAAAAAAAA")

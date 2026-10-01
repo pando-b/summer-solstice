@@ -121,7 +121,7 @@ def _product(rec: dict, to: str, ctx: Context) -> dict:
                 f"move to testing for a pay-before-spend test instead")
 
     if cur == "testing":
-        start = _parse(rec["test_started_at"])
+        start = parse_ts(rec["test_started_at"])
         pre_orders = _pre_orders_in_window(ctx.events, start)
         if to == "building" and pre_orders < PRE_ORDERS_TO_UNLOCK:
             raise TransitionError(
@@ -132,10 +132,10 @@ def _product(rec: dict, to: str, ctx: Context) -> dict:
                 raise TransitionError(f"test has {pre_orders} paid pre-orders; move to building, not parked")
             if ctx.now < start + TEST_WINDOW:
                 raise TransitionError(
-                    f"test runs until day 14 ({_fmt(start + TEST_WINDOW)}); it can be parked only after that")
+                    f"test runs until day 14 ({fmt_ts(start + TEST_WINDOW)}); it can be parked only after that")
 
     if to == "testing":
-        new["test_started_at"] = _fmt(ctx.now)
+        new["test_started_at"] = fmt_ts(ctx.now)
 
     if not counts_toward_cap(rec) and to in CAP_STATUSES:
         in_flight = [p for p in ctx.others if counts_toward_cap(p)]
@@ -153,9 +153,9 @@ def _problem(rec: dict, to: str) -> dict:
     if to not in allowed:
         raise _not_allowed("problem", cur, to, allowed)
     new = dict(rec, status=to)
-    if to == "dropped" and rec.get("refetch_failures", 0) < 3:
-        raise TransitionError(
-            f"pending_evidence -> dropped needs 3 failed refetch runs; have {rec.get('refetch_failures', 0)}")
+    failures = rec.get("refetch_failures", 0)
+    if to == "dropped" and failures < 3:
+        raise TransitionError(f"pending_evidence -> dropped needs 3 failed refetch runs; have {failures}")
     if cur == "pending_evidence" and to == "found":
         new["refetch_failures"] = 0
     return new
@@ -183,13 +183,13 @@ def _pre_orders_in_window(events: list[dict], start: datetime) -> int:
     return sum(
         1 for e in events
         if e.get("type") == "buy_signal" and e.get("kind") in PRE_ORDER_KINDS
-        and start <= _parse(e["at"]) <= end
+        and start <= parse_ts(e["at"]) <= end
     )
 
 
-def _parse(value: str) -> datetime:
+def parse_ts(value: str) -> datetime:
     return datetime.fromisoformat(value).astimezone(UTC)
 
 
-def _fmt(dt: datetime) -> str:
+def fmt_ts(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")

@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from solstice import __version__, doctor, init, leakscan
-from solstice.lifecycle import TransitionError
+from solstice.lifecycle import INITIAL, TransitionError
 from solstice.state import ENTITIES, LockError, RecordError, Store, load_schema
 from solstice.workspace import WorkspaceError, resolve_workspace
 
@@ -30,7 +30,7 @@ def _out(data) -> None:
 
 def _read_json(source: str):
     try:
-        text = sys.stdin.read() if source == "-" else open(source).read()
+        text = sys.stdin.read() if source == "-" else Path(source).read_text()
         return json.loads(text)
     except OSError as exc:
         raise RecordError(f"cannot read {source}: {exc}") from exc
@@ -78,7 +78,7 @@ def _conf_record(p: argparse.ArgumentParser) -> None:
     u.add_argument("--file", required=True, help="JSON patch file, or - for stdin")
 
     t = sub.add_parser("transition", help="change status through the lifecycle rules")
-    t.add_argument("entity", choices=["problem", "product", "approval"])
+    t.add_argument("entity", choices=list(INITIAL))
     t.add_argument("id")
     t.add_argument("status")
     t.add_argument("--file", help="JSON fields to set with the move (e.g. channel_live_at, reason)")
@@ -199,7 +199,8 @@ def _run_leakscan(args: argparse.Namespace) -> int:
     try:
         ws = resolve_workspace()
         terms = leakscan.load_terms(ws)
-        findings = leakscan.scan_push(Path.cwd(), sys.stdin.read().splitlines(), terms)
+        findings = leakscan.scan_push(Path.cwd(), sys.stdin.read().splitlines(), terms,
+                                      remote=args.remote)
     except (WorkspaceError, leakscan.LeakscanError) as exc:
         print(f"{blocked} (fail closed): {exc}", file=sys.stderr)
         return 2
