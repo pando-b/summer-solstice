@@ -21,6 +21,8 @@ from pathlib import Path
 
 import yaml
 
+from solstice.errors import SolsticeError
+
 ENV_VAR = "SOLSTICE_WORKSPACE"
 CONFIG_DIR = ".solstice"
 CONFIG_FILE = "config.yaml"
@@ -38,8 +40,11 @@ _PLUGIN_REMOTE_RE = re.compile(
 _GIT_ENV_OVERRIDES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES")
 
 
-class WorkspaceError(Exception):
+class WorkspaceError(SolsticeError):
     """The workspace could not be resolved, or resolved somewhere forbidden."""
+
+    kind = "workspace"
+    exit_code = 2
 
 
 def is_plugin_remote(url: str) -> bool:

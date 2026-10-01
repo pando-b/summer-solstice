@@ -225,6 +225,82 @@ def test_expired_lock_is_reclaimed(store, ws, clock):
     assert not lock.exists()
 
 
+def _contender(ws, clock, wait=0.0):
+    return state.Lock(ws, ttl=60, wait=wait, now=clock, sleep=lambda s: None)
+
+
+def _cut_in_after_first_read(loser, winner):
+    """Make `loser` read the lock holder, then let `winner` take the lock
+    before `loser` acts on what it read: both saw the same stale holder."""
+    orig, fired = loser._holder, []
+
+    def hooked(*a, **kw):
+        seen = orig(*a, **kw)
+        if not fired:
+            fired.append(True)
+            winner.__enter__()
+        return seen
+
+    loser._holder = hooked
+    return fired
+
+
+def test_two_writers_reclaiming_the_same_expired_lock_only_one_wins(ws, clock):
+    lock = _hold_lock(ws, clock, 60)
+    clock.advance(seconds=61)
+    a, b = _contender(ws, clock), _contender(ws, clock)
+    fired = _cut_in_after_first_read(b, a)
+    with pytest.raises(LockError, match="locked"):
+        b.__enter__()
+    assert fired
+    held = lock.read_text()
+    assert json.loads(held)["expires_at"] == f.ts(clock() + timedelta(seconds=60))
+    a.__exit__(None, None, None)
+    assert not lock.exists()
+
+
+def test_two_writers_reclaim_race_is_stable(ws, clock):
+    for _ in range(25):
+        test_two_writers_reclaiming_the_same_expired_lock_only_one_wins(ws, clock)
+        clock.advance(seconds=1)
+
+
+def test_unreadable_lock_is_reclaimed_once_under_the_guard(ws, clock, monkeypatch):
+    lock = ws / ".solstice" / "write.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("{not json")
+    guarded = []
+    real_flock = state.fcntl.flock
+
+    def spy(fd, op):
+        if op & state.fcntl.LOCK_EX:
+            guarded.append(op)
+        return real_flock(fd, op)
+
+    monkeypatch.setattr(state.fcntl, "flock", spy)
+    a, b = _contender(ws, clock), _contender(ws, clock)
+    _cut_in_after_first_read(b, a)
+    with pytest.raises(LockError):
+        b.__enter__()
+    assert guarded, "reclaim must take the guard lock"
+    assert (ws / ".solstice" / "write.lock.guard").exists()
+    assert json.loads(lock.read_text())["expires_at"]  # a's fresh lock, not unlinked by b
+    a.__exit__(None, None, None)
+
+
+def test_expired_writer_release_keeps_the_successors_lock(ws, clock):
+    a = _contender(ws, clock)
+    a.__enter__()
+    clock.advance(seconds=61)
+    b = _contender(ws, clock)
+    b.__enter__()  # reclaims a's expired lock
+    successor = (ws / ".solstice" / "write.lock").read_text()
+    a.__exit__(None, None, None)
+    assert (ws / ".solstice" / "write.lock").read_text() == successor
+    b.__exit__(None, None, None)
+    assert not (ws / ".solstice" / "write.lock").exists()
+
+
 def test_lock_released_after_failed_write(store, ws):
     with pytest.raises(RecordError):
         store.create("problem", f.problem(demand=[]))

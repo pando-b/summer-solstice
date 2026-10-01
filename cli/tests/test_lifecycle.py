@@ -253,3 +253,29 @@ def test_problem_illegal_transition(store):
     with pytest.raises(TransitionError):
         store.transition("problem", rec["id"], "dropped")
     assert store.transition("problem", rec["id"], "rejected")["status"] == "rejected"
+
+
+# --- refusals carry structured details (agent contract) ---------------------
+
+
+def test_refusals_carry_from_to_allowed_and_rule(store):
+    rec = _product(store, "building")
+    with pytest.raises(TransitionError) as exc:
+        store.transition("product", rec["id"], "live")
+    assert exc.value.kind == "transition_refused"
+    assert exc.value.details == {"from": "building", "to": "live", "allowed": ["built"]}
+
+    rec = _product(store, "building", "built")
+    with pytest.raises(TransitionError) as exc:
+        store.transition("product", rec["id"], "live")
+    assert exc.value.details["rule"] == "channel_live_at_required"
+    assert exc.value.details["allowed"] == ["in_review", "live"]
+
+
+def test_problem_drop_refusal_names_refetch_rule(store):
+    rec = _pending_problem(store)
+    with pytest.raises(TransitionError) as exc:
+        store.transition("problem", rec["id"], "dropped")
+    d = exc.value.details
+    assert d["rule"] == "refetch_failures" and (d["needed"], d["have"]) == (3, 0)
+    assert d["allowed"] == ["dropped", "found"]

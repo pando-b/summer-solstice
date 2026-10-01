@@ -429,3 +429,62 @@ def test_hook_blocks_when_uv_is_unavailable(tmp_path):
                          env={"PATH": path, "HOME": str(tmp_path)}, capture_output=True, text=True)
     assert out.returncode != 0
     assert "blocked" in out.stderr.lower()
+
+
+# --- CI commit-message scan -------------------------------------------------
+
+
+def _scan_commits(monkeypatch, repo, rng):
+    monkeypatch.chdir(repo)
+    return main(["leakscan", "commits", rng])
+
+
+def test_commits_secret_in_message_names_the_commit(repo, monkeypatch, capsys):
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    _commit(repo, "clean change", {"a.txt": "clean\n"})
+    bad = _commit(repo, f"wire checkout\n\nkey was {FAKE['stripe-key']}", {"b.txt": "clean\n"})
+    _commit(repo, "another clean change", {"c.txt": "clean\n"})
+    head = _git("rev-parse", "HEAD", cwd=repo)
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 1
+    err = capsys.readouterr().err
+    assert "stripe-key" in err and f"commit {bad[:12]} message" in err
+    assert FAKE["stripe-key"] not in err
+
+
+def test_commits_clean_range_passes(repo, monkeypatch, capsys):
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    head = _commit(repo, "clean change", {"a.txt": "clean\n"})
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 0
+    assert "clean" in capsys.readouterr().out
+
+
+def test_commits_scan_is_messages_only(repo, monkeypatch):
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    head = _commit(repo, "clean message", {"a.txt": FAKE["stripe-key"] + "\n"})
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 0
+
+
+def test_commits_range_excludes_commits_before_base(repo, monkeypatch):
+    _commit(repo, f"old {FAKE['github-token']}")
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    head = _commit(repo, "clean change")
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 0
+
+
+@pytest.mark.parametrize("base", [ZERO, "f" * 40])
+def test_commits_zero_or_unknown_base_scans_all_of_heads_history(repo, monkeypatch, base):
+    _commit(repo, f"early {FAKE['github-token']}")
+    head = _commit(repo, "clean change")
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 1
+
+
+@pytest.mark.parametrize("rng", ["not-a-range", "..HEAD", "HEAD..", "HEAD..nosuchref", "HEAD..--all"])
+def test_commits_invalid_range_cannot_run_and_fails_closed(repo, monkeypatch, capsys, rng):
+    assert _scan_commits(monkeypatch, repo, rng) == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_ci_runs_the_commit_message_scan_over_full_history():
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    assert "fetch-depth: 0" in ci
+    assert "leakscan commits" in ci

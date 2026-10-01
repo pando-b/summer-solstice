@@ -64,7 +64,7 @@ def test_init_on_new_path_creates_full_scaffold(tmp_path, capsys):
     assert {s["adapter"] for s in manifest["secrets"]} == ADAPTERS
     assert (ws / "denylist.txt").is_file()
     ignore = (ws / ".gitignore").read_text().splitlines()
-    for line in (".solstice/write.lock", "*.tmp", ".env*"):
+    for line in (".solstice/write.lock", ".solstice/write.lock.guard", "*.tmp", ".env*"):
         assert line in ignore
 
     # The scaffold is immediately usable by the rest of the CLI.

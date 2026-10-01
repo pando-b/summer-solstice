@@ -4,10 +4,24 @@ Commands register through COMMANDS: each entry maps a name to
 (help text, configure(parser), run(args) -> exit code).
 
 Record commands read JSON (a file path or `-` for stdin) and print JSON.
-Exit codes: 0 ok, 1 invalid record or refused transition (doctor: a
-missing-required item; leakscan: findings, push blocked), 2 workspace error
-(leakscan: the scan could not run, push blocked), 3 workspace lock held by
-another writer.
+
+Every failure that reaches `main` prints one JSON envelope to stderr and
+nothing to stdout (see `solstice.errors`)::
+
+    {"error": {"kind": "...", "message": "...", "details": {...}}}
+
+Exit codes:
+
+- 0  ok
+- 1  invalid record, missing record, corrupt history, or refused transition
+     (doctor: a missing-required item; leakscan: findings, push blocked)
+- 2  workspace error (leakscan: the scan could not run, so it fails closed)
+- 3  workspace lock held by another writer
+- 64 usage error: unknown command, bad argument (`kind: usage`)
+- 70 unexpected internal failure (`kind: internal`, no traceback)
+
+`doctor` and `leakscan` print human reports; only their unexpected failures
+use the envelope.
 """
 
 from __future__ import annotations
@@ -19,8 +33,9 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from solstice import __version__, doctor, init, leakscan
-from solstice.lifecycle import INITIAL, TransitionError
-from solstice.state import ENTITIES, LockError, RecordError, Store, load_schema
+from solstice.errors import EX_SOFTWARE, EX_USAGE, SolsticeError, emit
+from solstice.lifecycle import INITIAL
+from solstice.state import ENTITIES, RecordError, Store, load_schema
 from solstice.workspace import WorkspaceError, resolve_workspace
 
 
@@ -83,6 +98,10 @@ def _conf_record(p: argparse.ArgumentParser) -> None:
     t.add_argument("status")
     t.add_argument("--file", help="JSON fields to set with the move (e.g. channel_live_at, reason)")
 
+    h = sub.add_parser("events", help="print a record's history as a JSON array")
+    h.add_argument("entity", **entity)
+    h.add_argument("id")
+
     e = sub.add_parser("event", help="append an event (e.g. buy_signal) to a record's history")
     e.add_argument("entity", **entity)
     e.add_argument("id")
@@ -107,6 +126,9 @@ def _run_record(args: argparse.Namespace) -> int:
     elif a == "transition":
         fields = _read_json(args.file) if args.file else None
         _out(store.transition(args.entity, args.id, args.status, fields))
+    elif a == "events":
+        store.get(args.entity, args.id)
+        _out(store.events(args.entity, args.id))
     elif a == "event":
         _out(store.add_event(args.entity, args.id, _read_json(args.file)))
     elif a == "refetch-failed":
@@ -174,6 +196,8 @@ def _conf_leakscan(p: argparse.ArgumentParser) -> None:
     pp = sub.add_parser("pre-push", help="scan the pushed commit range; reads git's pre-push stdin")
     pp.add_argument("remote", nargs="?")
     pp.add_argument("url", nargs="?")
+    c = sub.add_parser("commits", help="secret-pattern scan of commit messages in a range (CI)")
+    c.add_argument("range", help="<base>..<head>; a zero or unknown base scans all of head's history")
 
 
 def _report_findings(findings, header: str) -> None:
@@ -193,6 +217,18 @@ def _run_leakscan(args: argparse.Namespace) -> int:
             _report_findings(findings, f"leakscan: {len(findings)} finding(s):")
             return 1
         print("leakscan: tree clean")
+        return 0
+
+    if args.action == "commits":
+        try:
+            findings = leakscan.scan_commit_messages(Path.cwd(), args.range)
+        except leakscan.LeakscanError as exc:
+            print(f"solstice leakscan: {exc}", file=sys.stderr)
+            return 2
+        if findings:
+            _report_findings(findings, f"leakscan: {len(findings)} finding(s) in commit messages:")
+            return 1
+        print("leakscan: commit messages clean")
         return 0
 
     blocked = "solstice leakscan: push BLOCKED"
@@ -223,13 +259,22 @@ COMMANDS: dict[str, Command] = {
     "hooks": ("arm the leak-guard pre-push hook in a plugin checkout", _conf_hooks, _run_hooks),
     "doctor": ("report setup health: ok, missing-optional, missing-required",
                _conf_doctor, _run_doctor),
-    "leakscan": ("leak guard: structural tree check or pre-push range scan",
+    "leakscan": ("leak guard: structural tree check, pre-push range scan, or message scan",
                  _conf_leakscan, _run_leakscan),
 }
 
 
+class _Parser(argparse.ArgumentParser):
+    """Usage errors print the `usage` envelope and exit EX_USAGE (64), so a
+    typo is distinguishable from a workspace failure. Subparsers inherit it."""
+
+    def error(self, message: str):
+        emit("usage", f"{self.prog}: {message}", {"usage": self.format_usage().strip()})
+        self.exit(EX_USAGE)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="solstice")
+    parser = _Parser(prog="solstice")
     parser.add_argument("--version", action="version", version=f"solstice {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     for name, (help_text, configure, run) in COMMANDS.items():
@@ -243,15 +288,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args._run(args)
-    except WorkspaceError as exc:
-        print(f"solstice: {exc}", file=sys.stderr)
-        return 2
-    except LockError as exc:
-        print(f"solstice: {exc}", file=sys.stderr)
-        return 3
-    except (RecordError, TransitionError) as exc:
-        print(f"solstice: {exc}", file=sys.stderr)
-        return 1
+    except SolsticeError as exc:
+        emit(exc.kind, exc.message, exc.details)
+        return exc.exit_code
+    except Exception as exc:  # noqa: BLE001  (the contract: never a traceback)
+        emit("internal", f"unexpected {type(exc).__name__}: {exc}", {"type": type(exc).__name__})
+        return EX_SOFTWARE
 
 
 if __name__ == "__main__":

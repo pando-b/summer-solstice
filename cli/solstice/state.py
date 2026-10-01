@@ -5,12 +5,14 @@ Layout under the workspace root::
     records/<plural>/<ULID>.json          one record, validated against its schema
     records/<plural>/<ULID>.events.jsonl  append-only history for that record
     .solstice/write.lock                  single-writer lock with a time-to-live
+    .solstice/write.lock.guard            advisory lock serializing expired-lock reclaim
 
 Every write goes through `Store`, which holds the lock while it writes.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import time
@@ -24,6 +26,7 @@ import yaml
 from jsonschema import Draft202012Validator
 
 from solstice import lifecycle
+from solstice.errors import SolsticeError
 from solstice.lifecycle import fmt_ts, parse_ts  # noqa: F401  (re-exported)
 
 SCHEMA_VERSION = 1
@@ -73,12 +76,19 @@ _RESERVED_EVENTS = {"created", "updated", "transition", "migrated", "refetch_fai
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
-class RecordError(Exception):
-    """A record is invalid, missing, or at the wrong schema version."""
+class RecordError(SolsticeError):
+    """A record is invalid, missing, or at the wrong schema version.
+
+    `kind` is `invalid_record` unless set to `not_found` or `corrupt_history`."""
+
+    kind = "invalid_record"
 
 
-class LockError(Exception):
+class LockError(SolsticeError):
     """Another writer holds the workspace lock."""
+
+    kind = "lock_held"
+    exit_code = 3
 
 
 def now_utc() -> datetime:
@@ -174,12 +184,22 @@ class Lock:
     A holder that crashes leaves a lock that the next writer reclaims once it
     has expired. While a live lock is held the writer polls until `wait`
     seconds pass, then raises LockError.
+
+    Reclaim and release are check-and-unlink steps, so each runs under an OS
+    advisory lock on `write.lock.guard`: the lock file is unlinked only while
+    it still holds the bytes the writer saw (the expired holder on reclaim,
+    the writer's own body on release). Two writers reclaiming the same
+    expired lock therefore cannot both proceed, and a writer whose lock
+    expired never deletes its successor's lock. Acquisition itself stays the
+    atomic `os.link`, outside the guard.
     """
 
     def __init__(self, workspace: Path, *, ttl: float, wait: float,
                  now: Callable[[], datetime], sleep: Callable[[float], None]):
         self.path = workspace / ".solstice" / "write.lock"
+        self.guard_path = self.path.with_name(self.path.name + ".guard")
         self.ttl, self.wait, self.now, self.sleep = ttl, wait, now, sleep
+        self._body: bytes | None = None
 
     def __enter__(self) -> Lock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -187,22 +207,24 @@ class Lock:
         while True:
             now = self.now()
             body = json.dumps({"pid": os.getpid(), "acquired_at": fmt_ts(now),
-                               "expires_at": fmt_ts(now + timedelta(seconds=self.ttl))})
+                               "expires_at": fmt_ts(now + timedelta(seconds=self.ttl)),
+                               "nonce": os.urandom(8).hex()}).encode()
             tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
-            tmp.write_text(body)
+            tmp.write_bytes(body)
             try:
                 os.link(tmp, self.path)  # atomic: fails if a lock exists, never half-written
             except FileExistsError:
-                holder = self._holder()
-                if holder == "gone":
-                    continue
+                raw, holder = self._holder()
+                if raw is None:
+                    continue  # released between our link and our read
                 if holder is None or parse_ts(holder["expires_at"]) <= now:
-                    self.path.unlink(missing_ok=True)  # expired or unreadable: reclaim
+                    self._unlink_if(raw)  # expired or unreadable: reclaim under the guard
                     continue
                 if waited >= self.wait:
                     raise LockError(
                         f"workspace is locked by another solstice writer (pid {holder.get('pid')}) "
-                        f"until {holder['expires_at']}; retry after it finishes or the lock expires"
+                        f"until {holder['expires_at']}; retry after it finishes or the lock expires",
+                        details={"pid": holder.get("pid"), "expires_at": holder["expires_at"]},
                     ) from None
                 step = min(0.2, self.wait - waited) or 0.2
                 self.sleep(step)
@@ -210,20 +232,40 @@ class Lock:
                 continue
             finally:
                 tmp.unlink(missing_ok=True)
+            self._body = body
             return self
 
     def __exit__(self, *exc) -> None:
-        self.path.unlink(missing_ok=True)
+        if self._body is not None:
+            self._unlink_if(self._body)
+            self._body = None
 
-    def _holder(self) -> dict | str | None:
+    def _holder(self) -> tuple[bytes | None, dict | None]:
+        """(raw bytes, parsed holder). Bytes are None when no lock file
+        exists; the holder is None when the file is unreadable."""
         try:
-            data = json.loads(self.path.read_text())
-            parse_ts(data["expires_at"])
-            return data
+            raw = self.path.read_bytes()
         except FileNotFoundError:
-            return "gone"
+            return None, None
+        try:
+            data = json.loads(raw)
+            parse_ts(data["expires_at"])
+            return raw, data
         except (ValueError, KeyError, TypeError):
-            return None
+            return raw, None
+
+    def _unlink_if(self, expected: bytes) -> None:
+        """Unlink the lock only while it still holds `expected`, under the guard."""
+        fd = os.open(self.guard_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                if self.path.read_bytes() == expected:
+                    self.path.unlink()
+            except FileNotFoundError:
+                pass
+        finally:
+            os.close(fd)  # closing the descriptor releases the flock
 
 
 # --- store ------------------------------------------------------------------
@@ -261,7 +303,8 @@ class Store:
     def get(self, entity: str, rid: str) -> dict:
         path = self._path(entity, rid)
         if not path.is_file():
-            raise RecordError(f"{entity} {rid} not found")
+            raise RecordError(f"{entity} {rid} not found", kind="not_found",
+                              details={"entity": entity, "id": rid})
         return self._load(entity, path)
 
     def list(self, entity: str, status: str | None = None) -> list[dict]:
@@ -275,7 +318,17 @@ class Store:
         path = self._events_path(entity, rid)
         if not path.is_file():
             return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        out = []
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                raise RecordError(f"{path}: line {n} is not valid JSON; the record's history is "
+                                  f"corrupt", kind="corrupt_history",
+                                  details={"path": str(path), "line": n}) from None
+        return out
 
     def _load(self, entity: str, path: Path) -> dict:
         try:
