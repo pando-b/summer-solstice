@@ -119,6 +119,69 @@
         }
       }
     },
+    "check_basis": {
+      "type": "object",
+      "description": "Citations (URLs or fetched values) behind each R6 check result",
+      "additionalProperties": false,
+      "properties": {
+        "demand_score": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "proof_of_spend": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "channel": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "payment_rail": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "name_available": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "owner_prereqs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "upfront_cash": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "operator_load": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
     "alive_bar": {
       "$ref": "#/$defs/alive_bar"
     },
@@ -206,7 +269,8 @@
           "enum": [
             "low",
             "medium",
-            "high"
+            "high",
+            "pending"
           ]
         },
         "support_volume": {

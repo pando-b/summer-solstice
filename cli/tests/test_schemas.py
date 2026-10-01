@@ -173,3 +173,23 @@ def test_cli_schema_unknown_entity_fails(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["schema", "nonsense"])
     assert exc.value.code != 0
+
+
+def test_pending_operator_load_is_accepted_on_a_non_go_decision():
+    checks = dict(f.ALL_PASS, name_available="fail", operator_load="pending")
+    body = f.decision(verdict="no_go_until_renamed", checks=checks)
+    body["operator_load"]["rating"] = "pending"
+    assert _errors("decision", body) == []
+
+
+def test_go_with_pending_operator_load_is_rejected():
+    body = f.decision()
+    body["operator_load"]["rating"] = "pending"
+    assert any("operator_load" in e for e in _errors("decision", body))
+
+
+def test_check_basis_cites_each_check():
+    body = f.decision(check_basis={"proof_of_spend": ["https://example.com/pricing"]})
+    assert _errors("decision", body) == []
+    body = f.decision(check_basis={"not_a_check": ["https://example.com"]})
+    assert _errors("decision", body)
