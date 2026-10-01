@@ -1,0 +1,30 @@
+[project]
+name = "solstice"
+version = "2.0.0.dev0"
+description = "Summer Solstice factory CLI: deterministic, credentialed, and state-changing actions."
+readme = { text = "Summer Solstice factory CLI.", content-type = "text/plain" }
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "jsonschema>=4.0",
+]
+
+[project.scripts]
+solstice = "solstice.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["solstice"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
