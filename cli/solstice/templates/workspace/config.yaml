@@ -8,13 +8,30 @@ budgets:
   # Monthly cap on the factory's own running costs (data APIs, scrapers). Find
   # starts on keyless sources and turns on a paid source only within this cap.
   factory_monthly_cap_usd: 50
+  # Cap on the paid calls of a single run; further paid calls in that run are skipped.
+  per_run_cap_usd: 5
   # Spend a product may make before a paid test proves people will pay.
   launch_spend_limit_usd: 50
   # Owner time value used in unit-economics pro formas.
   owner_hourly_rate_usd: 100
 
-# Per-adapter settings (enable flags, per-run caps). Empty means defaults.
+# Per-adapter settings. Empty means the CLI's defaults; `solstice demand sources`
+# shows the cost each paid adapter reserves. Keys never go here: set them in
+# your environment (see secrets-manifest.yaml). Uncomment to override:
 adapters: {}
+#  dataforseo_volume:
+#    usd_per_task: 0.09        # reserved per task; the reported cost is booked after
+#    location_code: 2840
+#    language_code: en
+#  dataforseo_trends:
+#    usd_per_task: 0.011
+#  trustmrr:
+#    usd_per_call: 0.0
+#  scrapecreators:
+#    usd_per_credit: 0.002     # one credit per request
+#  last30days:
+#    command: ["python3", "/path/to/last30days/scripts/last30days.py"]
+#    usd_per_run: 0.10         # estimated: the engine spends your own backend credits
 
 # Scheduled runs registered on the owner's machine. Empty until configured.
 schedule: {}

@@ -1,0 +1,15 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "active_installs": 1000,
+    "author": "Example Author",
+    "last_updated": "2026-02-03 4:05pm GMT",
+    "name": "Example Restock Alerts",
+    "slug": "example-restock-alerts",
+    "version": "1.4.2"
+  },
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "status": 200
+}

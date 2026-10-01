@@ -1,0 +1,58 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "cursor": 20,
+    "search_item_list": [
+      {
+        "aweme_info": {
+          "author": {
+            "unique_id": "example_creator"
+          },
+          "aweme_id": "7000000000000000001",
+          "desc": "example widget haul",
+          "statistics": {
+            "collect_count": 10,
+            "comment_count": 20,
+            "digg_count": 300,
+            "play_count": 5000,
+            "share_count": 5
+          }
+        }
+      },
+      {
+        "aweme_info": {
+          "author": {
+            "unique_id": "example_creator"
+          },
+          "aweme_id": "7000000000000000001",
+          "desc": "duplicate of the first",
+          "statistics": {
+            "collect_count": 10,
+            "comment_count": 20,
+            "digg_count": 300,
+            "play_count": 5000,
+            "share_count": 5
+          }
+        }
+      },
+      {
+        "aweme_info": {
+          "author": {
+            "unique_id": "example_creator_b"
+          },
+          "aweme_id": "7000000000000000002",
+          "desc": "widget restock tips",
+          "statistics": {
+            "collect_count": 1,
+            "comment_count": 2,
+            "digg_count": 40,
+            "play_count": 900,
+            "share_count": 0
+          }
+        }
+      }
+    ]
+  },
+  "headers": {},
+  "status": 200
+}

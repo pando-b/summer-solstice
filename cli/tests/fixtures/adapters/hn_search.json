@@ -1,0 +1,31 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "hits": [
+      {
+        "author": "example_user_a",
+        "created_at_i": 1767000000,
+        "num_comments": 41,
+        "objectID": "1000001",
+        "points": 88,
+        "title": "Ask HN: How do you track example widget restocks?",
+        "url": null
+      },
+      {
+        "author": "example_user_b",
+        "created_at_i": 1766000000,
+        "num_comments": 3,
+        "objectID": "1000002",
+        "points": 12,
+        "title": "Show HN: An example widget tracker",
+        "url": "https://example.com/widget-tracker"
+      }
+    ],
+    "hitsPerPage": 20,
+    "nbHits": 137,
+    "nbPages": 7,
+    "page": 0
+  },
+  "headers": {},
+  "status": 200
+}

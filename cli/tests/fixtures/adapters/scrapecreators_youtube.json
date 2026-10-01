@@ -1,0 +1,22 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "videos": [
+      {
+        "commentCountInt": 35,
+        "id": "exampleVid01",
+        "likeCountInt": 400,
+        "title": "Example widget restock tracker review",
+        "url": "https://www.youtube.com/watch?v=exampleVid01",
+        "viewCountInt": 15000
+      },
+      {
+        "id": "exampleVid02",
+        "title": "Example widget alerts walkthrough",
+        "viewCountInt": 2100
+      }
+    ]
+  },
+  "headers": {},
+  "status": 200
+}

@@ -1,0 +1,86 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "cost": 0.009,
+    "status_code": 20000,
+    "status_message": "Ok.",
+    "tasks": [
+      {
+        "cost": 0.009,
+        "id": "00000000-0000-0000-0000-000000000001",
+        "result": [
+          {
+            "check_url": "https://trends.google.com/trends/explore?q=example%20widget%20tracker",
+            "items": [
+              {
+                "data": [
+                  {
+                    "date_from": "2025-01-05",
+                    "date_to": "2025-01-11",
+                    "missing_data": false,
+                    "timestamp": 1736035200,
+                    "values": [
+                      20
+                    ]
+                  },
+                  {
+                    "date_from": "2025-04-06",
+                    "date_to": "2025-04-12",
+                    "missing_data": false,
+                    "timestamp": 1743897600,
+                    "values": [
+                      30
+                    ]
+                  },
+                  {
+                    "date_from": "2025-07-06",
+                    "date_to": "2025-07-12",
+                    "missing_data": false,
+                    "timestamp": 1751760000,
+                    "values": [
+                      40
+                    ]
+                  },
+                  {
+                    "date_from": "2025-10-05",
+                    "date_to": "2025-10-11",
+                    "missing_data": false,
+                    "timestamp": 1759622400,
+                    "values": [
+                      60
+                    ]
+                  },
+                  {
+                    "date_from": "2025-12-28",
+                    "date_to": "2026-01-03",
+                    "missing_data": true,
+                    "timestamp": 1766880000,
+                    "values": [
+                      null
+                    ]
+                  }
+                ],
+                "keywords": [
+                  "example widget tracker"
+                ],
+                "type": "google_trends_graph"
+              }
+            ],
+            "keywords": [
+              "example widget tracker"
+            ],
+            "type": "web"
+          }
+        ],
+        "result_count": 1,
+        "status_code": 20000,
+        "status_message": "Ok."
+      }
+    ],
+    "tasks_count": 1,
+    "tasks_error": 0,
+    "version": "0.1.20260101"
+  },
+  "headers": {},
+  "status": 200
+}

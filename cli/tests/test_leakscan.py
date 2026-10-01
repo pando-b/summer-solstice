@@ -41,8 +41,24 @@ FAKE = {
     "credential-assignment": "api_key = '" + _tok(24) + "'",
     "credential-assignment-unquoted": "API_TO" + "KEN=" + "abcdefghijklmnopqrstuvwx",
     "credential-assignment-yaml": "pass" + "word: " + _tok(24) + "  # synthetic",
+    "secrets-manager-id": "workspace" + "Id: \"" + "a1b2c3d4-e5f6-4890-abcd-ef1234567890" + "\"",
+    "secrets-manager-id-json": "\"project" + "Id\": \"" + "65f0c0ffee1234567890abcd" + "\"",
+    "secrets-manager-id-env": "INFIS" + "ICAL_PROJECT_ID=" + "a1b2c3d4e5f6a7b8",
+    "api-key-header": "x-api" + "-key: " + _tok(32),
+    "api-key-header-json": "\"x-api" + "-key\": \"" + _tok(32) + "\"",
+    "authorization-header": "Authorization: " + "Bea" + "rer " + _tok(32),
+    "authorization-header-basic": "\"Authori" + "zation\": \"Ba" + "sic " + _tok(28) + "==\"",
 }
-RULE_OF = {k: k.removesuffix("-test").removesuffix("-unquoted").removesuffix("-yaml") for k in FAKE}
+_SUFFIXES = ("-test", "-unquoted", "-yaml", "-json", "-env", "-basic")
+
+
+def _rule_of(name: str) -> str:
+    for suffix in _SUFFIXES:
+        name = name.removesuffix(suffix)
+    return name
+
+
+RULE_OF = {k: _rule_of(k) for k in FAKE}
 
 
 # --- secret patterns --------------------------------------------------------
@@ -60,6 +76,10 @@ def test_each_secret_pattern_fires(name):
     "sk_and_rk_prefixes_are_documented_here",  # no digits/mixed case token
     "token = os.environ['EXAMPLE_TOKEN']",
     "polar_api",
+    'headers = {"x-api-key": creds[KEY_NAME]}',
+    '"Authorization": f"Bearer {creds[KEY_NAME]}"',
+    "workspaceId: <your-workspace-id>",
+    "projectId = None",
 ])
 def test_benign_strings_do_not_fire(text):
     assert leakscan.scan_secrets(text) == []
@@ -110,6 +130,15 @@ def test_fixture_without_marker_fails_and_with_marker_passes(tmp_path):
     (fx / "good.json").write_text(json.dumps({"_fixture": MARKER, "name": "example"}))
     findings = leakscan.scan_tree(tmp_path)
     assert [(f.rule, f.where) for f in findings] == [("fixture-marker", "cli/tests/fixtures/bad.json")]
+
+
+@pytest.mark.parametrize("name", ["secrets-manager-id", "api-key-header"])
+def test_tracked_secrets_manager_id_or_api_key_header_is_a_finding(tmp_path, name):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text(f"example: 1\n{FAKE[name]}\n")
+    findings = leakscan.scan_tree(tmp_path)
+    assert RULE_OF[name] in _rules(findings)
+    assert FAKE[name] not in "\n".join(map(str, findings))
 
 
 def test_fake_stripe_key_in_fixture_fails_ci(tmp_path):
@@ -429,3 +458,62 @@ def test_hook_blocks_when_uv_is_unavailable(tmp_path):
                          env={"PATH": path, "HOME": str(tmp_path)}, capture_output=True, text=True)
     assert out.returncode != 0
     assert "blocked" in out.stderr.lower()
+
+
+# --- CI commit-message scan -------------------------------------------------
+
+
+def _scan_commits(monkeypatch, repo, rng):
+    monkeypatch.chdir(repo)
+    return main(["leakscan", "commits", rng])
+
+
+def test_commits_secret_in_message_names_the_commit(repo, monkeypatch, capsys):
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    _commit(repo, "clean change", {"a.txt": "clean\n"})
+    bad = _commit(repo, f"wire checkout\n\nkey was {FAKE['stripe-key']}", {"b.txt": "clean\n"})
+    _commit(repo, "another clean change", {"c.txt": "clean\n"})
+    head = _git("rev-parse", "HEAD", cwd=repo)
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 1
+    err = capsys.readouterr().err
+    assert "stripe-key" in err and f"commit {bad[:12]} message" in err
+    assert FAKE["stripe-key"] not in err
+
+
+def test_commits_clean_range_passes(repo, monkeypatch, capsys):
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    head = _commit(repo, "clean change", {"a.txt": "clean\n"})
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 0
+    assert "clean" in capsys.readouterr().out
+
+
+def test_commits_scan_is_messages_only(repo, monkeypatch):
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    head = _commit(repo, "clean message", {"a.txt": FAKE["stripe-key"] + "\n"})
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 0
+
+
+def test_commits_range_excludes_commits_before_base(repo, monkeypatch):
+    _commit(repo, f"old {FAKE['github-token']}")
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    head = _commit(repo, "clean change")
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 0
+
+
+@pytest.mark.parametrize("base", [ZERO, "f" * 40])
+def test_commits_zero_or_unknown_base_scans_all_of_heads_history(repo, monkeypatch, base):
+    _commit(repo, f"early {FAKE['github-token']}")
+    head = _commit(repo, "clean change")
+    assert _scan_commits(monkeypatch, repo, f"{base}..{head}") == 1
+
+
+@pytest.mark.parametrize("rng", ["not-a-range", "..HEAD", "HEAD..", "HEAD..nosuchref", "HEAD..--all"])
+def test_commits_invalid_range_cannot_run_and_fails_closed(repo, monkeypatch, capsys, rng):
+    assert _scan_commits(monkeypatch, repo, rng) == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_ci_runs_the_commit_message_scan_over_full_history():
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    assert "fetch-depth: 0" in ci
+    assert "leakscan commits" in ci

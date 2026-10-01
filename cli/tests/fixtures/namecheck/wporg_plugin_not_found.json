@@ -1,0 +1,10 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "error": "Plugin not found."
+  },
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "status": 404
+}

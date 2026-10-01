@@ -9,6 +9,11 @@ Two entry points:
 - ``scan_push(repo, lines, terms)``: the pre-push range scan. For every commit
   being pushed it checks the commit message, added lines, and added paths
   against the private term list and the secret patterns.
+- ``scan_commit_messages(repo, "<base>..<head>")``: the CI message scan. Every
+  commit message in the range is checked against the secret patterns only
+  (the term list is private and never reaches CI). A zero base, or one the
+  clone does not hold (a new branch or a force-push), widens the scan to every
+  commit reachable from the head.
 
 The term list comes from the private workspace: ``denylist.txt`` plus the
 name, slug, and domains fields of every ``records/products/*.json`` and the
@@ -48,6 +53,16 @@ SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("private-key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
     ("aws-access-key-id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}")),
+    # A secrets-manager workspace or project ID assigned a value (R26: no owner identifiers).
+    ("secrets-manager-id", re.compile(
+        r"\b(?:workspace_?id|project_?id|INFISICAL_[A-Z0-9_]+)[\"']?\s*[:=]\s*[\"']?"
+        r"[A-Za-z0-9][A-Za-z0-9_-]{7,}", re.IGNORECASE)),
+    # Header assignments carrying a literal value. These run before the generic
+    # credential rule so a header is reported under its own name.
+    ("api-key-header", re.compile(
+        r"(?i)\bx-api-key[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9_\-.]{16,}")),
+    ("authorization-header", re.compile(
+        r"(?i)\bauthorization[\"']?\s*[:=]\s*[\"']?(?:basic|bearer)\s+[A-Za-z0-9+/=_\-.]{16,}")),
     # Quoted, or unquoted up to whitespace, a quote, a comment, or end of line.
     ("credential-assignment", re.compile(
         r"(?i)(?:api[_-]?key|secret|token|password)[\"']?\s*[:=]\s*"
@@ -373,4 +388,31 @@ def scan_push(repo: Path, lines: Iterable[str], terms: list[str],
                 findings.append(Finding("denylist-term", f"commit {short} {p}", t))
             for rule, shown in scan_secrets(text):
                 findings.append(Finding(rule, f"commit {short} {p}", shown))
+    return findings
+
+
+# --- CI commit-message scan -------------------------------------------------
+
+
+def _range_spec(repo: Path, rng: str) -> str:
+    """The rev-list spec for ``<base>..<head>``. An unusable range raises
+    LeakscanError so the caller fails closed."""
+    base, sep, head = rng.partition("..")
+    if not sep or not base or not head or head.startswith(".") or any(
+            p.startswith("-") for p in (base, head)):
+        raise LeakscanError(f"expected a commit range <base>..<head>, got {rng!r}")
+    if not _has_commit(repo, head):
+        raise LeakscanError(f"head {head!r} is not a commit in this clone")
+    if _is_zero(base) or not _has_commit(repo, base):
+        return head  # new branch or force-push: every commit reachable from head
+    return f"{base}..{head}"
+
+
+def scan_commit_messages(repo: Path, rng: str) -> list[Finding]:
+    out = _git(repo, "log", "-z", "--format=%H%n%B", _range_spec(repo, rng), "--")
+    findings: list[Finding] = []
+    for entry in filter(None, out.split("\0")):
+        sha, _, message = entry.partition("\n")
+        for rule, shown in scan_secrets(message):
+            findings.append(Finding(rule, f"commit {sha[:12]} message", shown))
     return findings

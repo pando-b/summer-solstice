@@ -10,9 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from solstice.errors import SolsticeError
+
 LIVE_CAP = 3
 TEST_WINDOW = timedelta(days=14)
 PRE_ORDERS_TO_UNLOCK = 3
+# The R20 go gate: gross margin floor and the most customers to break even.
+MARGIN_FLOOR = 0.80
+BREAK_EVEN_MAX = 10
 
 # Paid pre-sale signals (R21). paid_conversion is a buy signal (R18) but not a pre-order.
 PRE_ORDER_KINDS = {"pre_order", "founding_member"}
@@ -55,8 +60,23 @@ INITIAL = {
 }
 
 
-class TransitionError(Exception):
-    """The requested status change is not allowed."""
+class TransitionError(SolsticeError):
+    """The requested status change is not allowed.
+
+    `details` carries `from`, `to`, and `allowed` (the statuses the lifecycle
+    table allows from the current one). When the table allows the move but a
+    guard refuses it, `details.rule` names the guard."""
+
+    kind = "transition_refused"
+
+
+def _refuse(message: str, cur: str, to: str, allowed, rule: str | None = None,
+            **extra) -> TransitionError:
+    details = {"from": cur, "to": to, "allowed": sorted(allowed)}
+    if rule:
+        details["rule"] = rule
+    details.update(extra)
+    return TransitionError(message, details=details)
 
 
 @dataclass
@@ -82,12 +102,14 @@ def apply(entity: str, rec: dict, to: str, ctx: Context) -> dict:
         return _problem(rec, to)
     if entity == "approval":
         return _approval(rec, to, ctx)
-    raise TransitionError(f"{entity} records have no status lifecycle")
+    raise TransitionError(f"{entity} records have no status lifecycle",
+                          details={"from": rec.get("status"), "to": to, "allowed": []})
 
 
 def _not_allowed(entity: str, cur: str, to: str, allowed) -> TransitionError:
     opts = ", ".join(sorted(allowed)) or "none (terminal)"
-    return TransitionError(f"{entity} {cur} -> {to} is not allowed; allowed from {cur}: {opts}")
+    return _refuse(f"{entity} {cur} -> {to} is not allowed; allowed from {cur}: {opts}",
+                   cur, to, allowed)
 
 
 def _product(rec: dict, to: str, ctx: Context) -> dict:
@@ -97,7 +119,8 @@ def _product(rec: dict, to: str, ctx: Context) -> dict:
     if cur == "awaiting_owner":
         prior = rec.get("awaiting_owner_from")
         if to != prior:
-            raise TransitionError(f"product awaiting_owner returns only to {prior}, not {to}")
+            raise _refuse(f"product awaiting_owner returns only to {prior}, not {to}",
+                          cur, to, [prior] if prior else [], rule="awaiting_owner_return")
         new.pop("awaiting_owner_from", None)
         return new
     if to == "awaiting_owner":
@@ -111,28 +134,37 @@ def _product(rec: dict, to: str, ctx: Context) -> dict:
         raise _not_allowed("product", cur, to, allowed)
 
     if to == "live" and not new.get("channel_live_at"):
-        raise TransitionError(f"product {cur} -> live needs channel_live_at (the kill window starts there)")
+        raise _refuse(f"product {cur} -> live needs channel_live_at (the kill window starts there)",
+                      cur, to, allowed, rule="channel_live_at_required")
 
     if cur == "qualified" and to == "building":
         spend = rec.get("estimated_upfront_spend_usd", 0)
         if spend > ctx.launch_limit:
-            raise TransitionError(
+            raise _refuse(
                 f"estimated upfront spend ${spend:g} is over the ${ctx.launch_limit:g} launch limit (R18); "
-                f"move to testing for a pay-before-spend test instead")
+                f"move to testing for a pay-before-spend test instead",
+                cur, to, allowed, rule="launch_spend_limit", requirement="R18",
+                spend_usd=spend, limit_usd=ctx.launch_limit)
 
     if cur == "testing":
         start = parse_ts(rec["test_started_at"])
         pre_orders = _pre_orders_in_window(ctx.events, start)
         if to == "building" and pre_orders < PRE_ORDERS_TO_UNLOCK:
-            raise TransitionError(
+            raise _refuse(
                 f"testing -> building needs {PRE_ORDERS_TO_UNLOCK} paid pre-order buy signals within "
-                f"14 days of the test start; have {pre_orders} (R21)")
+                f"14 days of the test start; have {pre_orders} (R21)",
+                cur, to, allowed, rule="pre_orders_to_unlock", requirement="R21",
+                needed=PRE_ORDERS_TO_UNLOCK, have=pre_orders)
         if to == "parked":
             if pre_orders >= PRE_ORDERS_TO_UNLOCK:
-                raise TransitionError(f"test has {pre_orders} paid pre-orders; move to building, not parked")
+                raise _refuse(f"test has {pre_orders} paid pre-orders; move to building, not parked",
+                              cur, to, allowed, rule="pre_orders_reached", requirement="R21",
+                              needed=PRE_ORDERS_TO_UNLOCK, have=pre_orders)
             if ctx.now < start + TEST_WINDOW:
-                raise TransitionError(
-                    f"test runs until day 14 ({fmt_ts(start + TEST_WINDOW)}); it can be parked only after that")
+                raise _refuse(
+                    f"test runs until day 14 ({fmt_ts(start + TEST_WINDOW)}); it can be parked only after that",
+                    cur, to, allowed, rule="test_window", requirement="R21",
+                    window_ends_at=fmt_ts(start + TEST_WINDOW))
 
     if to == "testing":
         new["test_started_at"] = fmt_ts(ctx.now)
@@ -140,10 +172,12 @@ def _product(rec: dict, to: str, ctx: Context) -> dict:
     if not counts_toward_cap(rec) and to in CAP_STATUSES:
         in_flight = [p for p in ctx.others if counts_toward_cap(p)]
         if len(in_flight) >= LIVE_CAP:
-            raise TransitionError(
+            raise _refuse(
                 f"live cap reached: {len(in_flight)} products already in flight "
                 f"({', '.join(sorted(p.get('slug', p['id']) for p in in_flight))}); "
-                f"the cap is {LIVE_CAP} (KTD6)")
+                f"the cap is {LIVE_CAP} (KTD6)",
+                cur, to, allowed, rule="live_cap", cap=LIVE_CAP,
+                in_flight=sorted(p["id"] for p in in_flight))
     return new
 
 
@@ -155,7 +189,8 @@ def _problem(rec: dict, to: str) -> dict:
     new = dict(rec, status=to)
     failures = rec.get("refetch_failures", 0)
     if to == "dropped" and failures < 3:
-        raise TransitionError(f"pending_evidence -> dropped needs 3 failed refetch runs; have {failures}")
+        raise _refuse(f"pending_evidence -> dropped needs 3 failed refetch runs; have {failures}",
+                      cur, to, allowed, rule="refetch_failures", needed=3, have=failures)
     if cur == "pending_evidence" and to == "found":
         new["refetch_failures"] = 0
     return new
@@ -165,16 +200,19 @@ def _approval(rec: dict, to: str, ctx: Context) -> dict:
     cur = rec["status"]
     allowed = APPROVAL_TRANSITIONS.get(cur, set()) if rec["subtype"] == "owner_prereq" else set()
     if to not in allowed:
-        raise TransitionError(
+        raise _refuse(
             f"approval ({rec['subtype']}) {cur} -> {to} is not allowed here; approving and rejecting "
-            f"go through the approvals flow, and only owner_prereq items close through `record transition`")
+            f"go through the approvals flow, and only owner_prereq items close through `record transition`",
+            cur, to, allowed)
     cost = rec.get("cost_usd", 0)
     if cost > ctx.launch_limit and not any(
         e.get("type") == "buy_signal" and e.get("kind") in BUY_SIGNAL_KINDS for e in ctx.product_events
     ):
-        raise TransitionError(
+        raise _refuse(
             f"owner_prereq costs ${cost:g}, over the ${ctx.launch_limit:g} launch limit; it cannot close "
-            f"until the product records a buy signal (R18)")
+            f"until the product records a buy signal (R18)",
+            cur, to, allowed, rule="buy_signal_before_spend", requirement="R18",
+            cost_usd=cost, limit_usd=ctx.launch_limit)
     return dict(rec, status=to)
 
 

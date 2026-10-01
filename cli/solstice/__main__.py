@@ -4,10 +4,26 @@ Commands register through COMMANDS: each entry maps a name to
 (help text, configure(parser), run(args) -> exit code).
 
 Record commands read JSON (a file path or `-` for stdin) and print JSON.
-Exit codes: 0 ok, 1 invalid record or refused transition (doctor: a
-missing-required item; leakscan: findings, push blocked), 2 workspace error
-(leakscan: the scan could not run, push blocked), 3 workspace lock held by
-another writer.
+
+Every failure that reaches `main` prints one JSON envelope to stderr and
+nothing to stdout (see `solstice.errors`)::
+
+    {"error": {"kind": "...", "message": "...", "details": {...}}}
+
+Exit codes:
+
+- 0  ok
+- 1  invalid record, missing record, corrupt history, refused transition,
+     a failed or unavailable demand fetch (`adapter`), a refused spend
+     (`budget`), or a refused approvals action (`approval`) (doctor: a missing-required item; leakscan: findings, push
+     blocked)
+- 2  workspace error (leakscan: the scan could not run, so it fails closed)
+- 3  workspace lock held by another writer
+- 64 usage error: unknown command, bad argument (`kind: usage`)
+- 70 unexpected internal failure (`kind: internal`, no traceback)
+
+`doctor` and `leakscan` print human reports; only their unexpected failures
+use the envelope.
 """
 
 from __future__ import annotations
@@ -18,9 +34,13 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from solstice import __version__, doctor, init, leakscan
-from solstice.lifecycle import INITIAL, TransitionError
-from solstice.state import ENTITIES, LockError, RecordError, Store, load_schema
+from solstice import (
+    __version__, approvals, brief, demand, doctor, init, leakscan, namecheck, proforma, score)
+from solstice.adapters import REGISTRY
+from solstice.adapters.base import Params
+from solstice.errors import EX_SOFTWARE, EX_USAGE, SolsticeError, UsageError, emit
+from solstice.lifecycle import INITIAL
+from solstice.state import ENTITIES, RecordError, Store, load_schema
 from solstice.workspace import WorkspaceError, resolve_workspace
 
 
@@ -83,6 +103,10 @@ def _conf_record(p: argparse.ArgumentParser) -> None:
     t.add_argument("status")
     t.add_argument("--file", help="JSON fields to set with the move (e.g. channel_live_at, reason)")
 
+    h = sub.add_parser("events", help="print a record's history as a JSON array")
+    h.add_argument("entity", **entity)
+    h.add_argument("id")
+
     e = sub.add_parser("event", help="append an event (e.g. buy_signal) to a record's history")
     e.add_argument("entity", **entity)
     e.add_argument("id")
@@ -107,6 +131,9 @@ def _run_record(args: argparse.Namespace) -> int:
     elif a == "transition":
         fields = _read_json(args.file) if args.file else None
         _out(store.transition(args.entity, args.id, args.status, fields))
+    elif a == "events":
+        store.get(args.entity, args.id)
+        _out(store.events(args.entity, args.id))
     elif a == "event":
         _out(store.add_event(args.entity, args.id, _read_json(args.file)))
     elif a == "refetch-failed":
@@ -174,6 +201,8 @@ def _conf_leakscan(p: argparse.ArgumentParser) -> None:
     pp = sub.add_parser("pre-push", help="scan the pushed commit range; reads git's pre-push stdin")
     pp.add_argument("remote", nargs="?")
     pp.add_argument("url", nargs="?")
+    c = sub.add_parser("commits", help="secret-pattern scan of commit messages in a range (CI)")
+    c.add_argument("range", help="<base>..<head>; a zero or unknown base scans all of head's history")
 
 
 def _report_findings(findings, header: str) -> None:
@@ -182,18 +211,26 @@ def _report_findings(findings, header: str) -> None:
         print(f"  {f}", file=sys.stderr)
 
 
+def _scan_report(scan: Callable[[], list], what: str, clean: str) -> int:
+    """Run a tree or commit-message scan: 2 if it cannot run, 1 on findings, else 0."""
+    try:
+        findings = scan()
+    except leakscan.LeakscanError as exc:
+        print(f"solstice leakscan: {exc}", file=sys.stderr)
+        return 2
+    if findings:
+        _report_findings(findings, f"leakscan: {len(findings)} finding(s){what}:")
+        return 1
+    print(f"leakscan: {clean} clean")
+    return 0
+
+
 def _run_leakscan(args: argparse.Namespace) -> int:
     if args.action == "tree":
-        try:
-            findings = leakscan.scan_tree(args.root)
-        except leakscan.LeakscanError as exc:
-            print(f"solstice leakscan: {exc}", file=sys.stderr)
-            return 2
-        if findings:
-            _report_findings(findings, f"leakscan: {len(findings)} finding(s):")
-            return 1
-        print("leakscan: tree clean")
-        return 0
+        return _scan_report(lambda: leakscan.scan_tree(args.root), "", "tree")
+    if args.action == "commits":
+        return _scan_report(lambda: leakscan.scan_commit_messages(Path.cwd(), args.range),
+                            " in commit messages", "commit messages")
 
     blocked = "solstice leakscan: push BLOCKED"
     try:
@@ -210,6 +247,167 @@ def _run_leakscan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _conf_demand(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    sub.add_parser("sources", help="each adapter's availability, cost model, and key status as JSON")
+    f = sub.add_parser("fetch", help="run one adapter fetch and print the normalized result")
+    f.add_argument("adapter", choices=list(REGISTRY))
+    f.add_argument("--query", action="append", default=[],
+                   help="search query (repeat for dataforseo_volume: one task, many keywords)")
+    f.add_argument("--handle", help="account handle (scrapecreators --platform x only)")
+    f.add_argument("--platform", help="scrapecreators: reddit, tiktok, youtube, or x")
+    f.add_argument("--run", dest="run_id", help="run to book spend on (default: an implicit run)")
+    target = f.add_mutually_exclusive_group()
+    target.add_argument("--new-problem", action="store_true",
+                        help="create a problem from the result (needs --title)")
+    target.add_argument("--problem", dest="problem_id", help="add the result to this problem")
+    f.add_argument("--title", help="title for --new-problem")
+    for name in ("metric", "unit", "url", "source"):
+        f.add_argument(f"--{name}", help=f"manual entry: {name}")
+    f.add_argument("--value", type=float, help="manual entry: the number")
+
+
+def _run_demand(args: argparse.Namespace) -> int:
+    store = _store()
+    deps = demand.Deps()
+    if args.action == "sources":
+        _out(demand.sources(store, deps))
+        return 0
+    if args.title is not None and not args.new_problem:
+        raise UsageError("--title applies only with --new-problem")
+    if args.new_problem and not args.title:
+        raise UsageError("--new-problem needs --title")
+    params = Params(queries=args.query, handle=args.handle, platform=args.platform,
+                    metric=args.metric, value=args.value, unit=args.unit, url=args.url,
+                    source=args.source)
+    _out(demand.fetch(store, args.adapter, params, deps=deps, run_id=args.run_id,
+                      new_problem=args.title if args.new_problem else None,
+                      problem_id=args.problem_id))
+    return 0
+
+
+def _conf_run(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    s = sub.add_parser("start", help="open a run record that carries spend and adapter status")
+    s.add_argument("--stage", required=True, help="e.g. find")
+    f = sub.add_parser("finish", help="close a run: complete, partial, or failed")
+    f.add_argument("id")
+
+
+def _run_run(args: argparse.Namespace) -> int:
+    store = _store()
+    if args.action == "start":
+        _out(demand.start_run(store, args.stage))
+    else:
+        _out(demand.finish_run(store, args.id))
+    return 0
+
+
+APPROVAL_STATUSES = ("pending", "approved", "rejected", "closed", "all")
+
+
+def _conf_approvals(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    ls = sub.add_parser("list", help="the owner queue with derived aging, nudged items first")
+    ls.add_argument("--status", choices=APPROVAL_STATUSES, default="pending")
+    s = sub.add_parser("show", help="one item with its derived aging")
+    s.add_argument("id")
+    r = sub.add_parser("request", help="queue an item; attachments are hashed now")
+    r.add_argument("--file", required=True, help="JSON body file, or - for stdin")
+    a = sub.add_parser("approve", help="owner only, in a terminal: approve by typed hash prefix")
+    a.add_argument("id")
+    j = sub.add_parser("reject", help="owner only, in a terminal: reject with a reason")
+    j.add_argument("id")
+    j.add_argument("--reason", required=True)
+    c = sub.add_parser("close", help="close an owner_prereq (R18 buy-signal guard applies)")
+    c.add_argument("id")
+    c.add_argument("--reason")
+
+
+def _run_approvals(args: argparse.Namespace) -> int:
+    store = _store()
+    a = args.action
+    if a == "list":
+        _out(approvals.list_queue(store, status=args.status))
+    elif a == "show":
+        _out(approvals.show(store, args.id))
+    elif a == "request":
+        _out(approvals.request(store, _read_json(args.file)))
+    elif a == "approve":
+        _out(approvals.approve(store, args.id, approvals.Deps()))
+    elif a == "reject":
+        _out(approvals.reject(store, args.id, args.reason, approvals.Deps()))
+    elif a == "close":
+        _out(approvals.close(store, args.id, reason=args.reason))
+    return 0
+
+
+def _conf_score(p: argparse.ArgumentParser) -> None:
+    p.add_argument("problem_id")
+    p.add_argument("--ratings", required=True,
+                   help="JSON {spend|channel_reach|gap|pain: {anchor, citations[]}}, "
+                        "a file or - for stdin")
+
+
+def _run_score(args: argparse.Namespace) -> int:
+    store = _store()
+    _out(score.score_problem(store, args.problem_id, _read_json(args.ratings)))
+    return 0
+
+
+def _run_rank(args: argparse.Namespace) -> int:
+    _out(score.rank(_store()))
+    return 0
+
+
+def _conf_rubric(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    sub.add_parser("install", help="copy the packaged rubric into the workspace "
+                                   "(refuses to overwrite an equal or newer one)")
+
+
+def _run_rubric(args: argparse.Namespace) -> int:
+    _out(score.install_rubric(_store()))
+    return 0
+
+
+def _conf_namecheck(p: argparse.ArgumentParser) -> None:
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--wporg", metavar="SLUG", help="WordPress.org plugin slug")
+    target.add_argument("--domain", metavar="NAME", help="domain name, checked through RDAP")
+
+
+def _run_namecheck(args: argparse.Namespace) -> int:
+    deps = namecheck.Deps()
+    if args.wporg is not None:
+        _out(namecheck.check_wporg(args.wporg, deps))
+    else:
+        _out(namecheck.check_domain(args.domain, deps))
+    return 0
+
+
+def _conf_proforma(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--file", required=True, help="pro forma inputs JSON, or - for stdin")
+    p.add_argument("--decision", dest="decision_id",
+                   help="also write the pro forma into this decision")
+
+
+def _run_proforma(args: argparse.Namespace) -> int:
+    _out(proforma.run(_store(), _read_json(args.file), args.decision_id))
+    return 0
+
+
+def _conf_brief(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    r = sub.add_parser("render", help="print a go decision's Build Brief as markdown")
+    r.add_argument("decision_id")
+
+
+def _run_brief(args: argparse.Namespace) -> int:
+    sys.stdout.write(brief.render(_store(), args.decision_id))
+    return 0
+
+
 Command = tuple[str, Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]]
 
 COMMANDS: dict[str, Command] = {
@@ -223,13 +421,40 @@ COMMANDS: dict[str, Command] = {
     "hooks": ("arm the leak-guard pre-push hook in a plugin checkout", _conf_hooks, _run_hooks),
     "doctor": ("report setup health: ok, missing-optional, missing-required",
                _conf_doctor, _run_doctor),
-    "leakscan": ("leak guard: structural tree check or pre-push range scan",
+    "leakscan": ("leak guard: structural tree check, pre-push range scan, or message scan",
                  _conf_leakscan, _run_leakscan),
+    "demand": ("list demand sources, or fetch a machine-measured demand number",
+               _conf_demand, _run_demand),
+    "run": ("start or finish a run record (spend ledger and adapter status)",
+            _conf_run, _run_run),
+    "approvals": ("owner queue: list, show, request; approve, reject, or close items",
+                  _conf_approvals, _run_approvals),
+    "score": ("score a found problem: measured volume/trend plus cited, anchored ratings",
+              _conf_score, _run_score),
+    "rank": ("scored found problems as JSON, highest demand score first",
+             lambda p: None, _run_rank),
+    "rubric": ("install the packaged demand-score rubric into the workspace",
+               _conf_rubric, _run_rubric),
+    "namecheck": ("availability of a WordPress.org slug or a domain: available, taken, "
+                  "or pending", _conf_namecheck, _run_namecheck),
+    "proforma": ("compute the R20 pro forma from inputs; optionally write it into a decision",
+                 _conf_proforma, _run_proforma),
+    "brief": ("render a go decision's Build Brief as markdown for ce-brainstorm",
+              _conf_brief, _run_brief),
 }
 
 
+class _Parser(argparse.ArgumentParser):
+    """Usage errors print the `usage` envelope and exit EX_USAGE (64), so a
+    typo is distinguishable from a workspace failure. Subparsers inherit it."""
+
+    def error(self, message: str):
+        emit("usage", f"{self.prog}: {message}", {"usage": self.format_usage().strip()})
+        self.exit(EX_USAGE)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="solstice")
+    parser = _Parser(prog="solstice")
     parser.add_argument("--version", action="version", version=f"solstice {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     for name, (help_text, configure, run) in COMMANDS.items():
@@ -243,15 +468,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args._run(args)
-    except WorkspaceError as exc:
-        print(f"solstice: {exc}", file=sys.stderr)
-        return 2
-    except LockError as exc:
-        print(f"solstice: {exc}", file=sys.stderr)
-        return 3
-    except (RecordError, TransitionError) as exc:
-        print(f"solstice: {exc}", file=sys.stderr)
-        return 1
+    except SolsticeError as exc:
+        emit(exc.kind, exc.message, exc.details)
+        return exc.exit_code
+    except Exception as exc:  # noqa: BLE001  (the contract: never a traceback)
+        emit("internal", f"unexpected {type(exc).__name__}: {exc}", {"type": type(exc).__name__})
+        return EX_SOFTWARE
 
 
 if __name__ == "__main__":

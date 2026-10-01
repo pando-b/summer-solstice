@@ -218,7 +218,8 @@
         },
         "fees_usd_per_customer": {
           "type": "number",
-          "minimum": 0
+          "minimum": 0,
+          "description": "Per customer per month, like every *_usd_per_customer field"
         },
         "running_cost_usd_per_customer": {
           "type": "number",
@@ -241,8 +242,16 @@
           "maximum": 1
         },
         "break_even_customers": {
-          "type": "integer",
-          "minimum": 0
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Customers whose first charge covers the upfront spend; null when a customer contributes nothing (never breaks even)"
         },
         "customers_for_5k_mrr": {
           "type": "integer",
@@ -328,6 +337,95 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "agent_readiness": {
+      "type": "object",
+      "description": "R25: whether an agent can complete the product's core job without a human in the browser",
+      "required": [
+        "core_job_without_human",
+        "summary"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "core_job_without_human": {
+          "type": "boolean"
+        },
+        "surfaces": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "api",
+              "mcp",
+              "cli",
+              "webhook",
+              "file_import_export",
+              "llms_txt",
+              "structured_data"
+            ]
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Skill-written; never fetched text"
+        }
+      }
+    },
+    "build_brief": {
+      "type": "object",
+      "description": "Go only. A compound-engineering settled-decisions brief; rendered by `solstice brief render`. Every string is skill-written, never fetched text.",
+      "required": [
+        "direction",
+        "settled",
+        "open_areas",
+        "evidence_ids"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "direction": {
+          "type": "string",
+          "minLength": 1,
+          "description": "1-2 lines"
+        },
+        "settled": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/settled_decision"
+          }
+        },
+        "open_areas": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ulid"
+          }
+        },
+        "demand_entry_ids": {
+          "type": "array",
+          "description": "IDs of demand entries on the decision's problem",
+          "items": {
+            "$ref": "#/$defs/ulid"
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -368,6 +466,48 @@
         "days": {
           "type": "integer",
           "minimum": 1
+        }
+      }
+    },
+    "settled_decision": {
+      "type": "object",
+      "required": [
+        "decision",
+        "provenance",
+        "rejected_alternative",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "topic": {
+          "enum": [
+            "shape",
+            "channel",
+            "price",
+            "scope",
+            "standards",
+            "name",
+            "other"
+          ]
+        },
+        "decision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provenance": {
+          "enum": [
+            "user-directed",
+            "user-approved"
+          ]
+        },
+        "rejected_alternative": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "one line"
         }
       }
     }

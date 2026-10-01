@@ -5,12 +5,18 @@ Layout under the workspace root::
     records/<plural>/<ULID>.json          one record, validated against its schema
     records/<plural>/<ULID>.events.jsonl  append-only history for that record
     .solstice/write.lock                  single-writer lock with a time-to-live
+    .solstice/write.lock.guard            advisory lock serializing expired-lock reclaim
 
 Every write goes through `Store`, which holds the lock while it writes.
+`record` commands use `create`/`update`/`transition`, which refuse
+CLI-managed fields. Modules that own such fields (`demand fetch` writes
+`demand` and `pending_fetch` and the run spend ledger) use `create_managed`,
+or take `lock()` themselves and call `insert_locked`/`put_locked`.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import time
@@ -20,11 +26,12 @@ from functools import cache
 from importlib import resources
 from pathlib import Path
 
-import yaml
 from jsonschema import Draft202012Validator
 
 from solstice import lifecycle
+from solstice.errors import SolsticeError
 from solstice.lifecycle import fmt_ts, parse_ts  # noqa: F401  (re-exported)
+from solstice.workspace import budget, load_config
 
 SCHEMA_VERSION = 1
 
@@ -56,29 +63,47 @@ LOCK_TTL_SECONDS = 60.0
 LOCK_WAIT_SECONDS = 10.0
 
 _IDENTITY = ("id", "schema_version", "created_at", "updated_at")
-# Fields only the lifecycle (or a later approvals module) may set.
-# Set only by U9's approve/reject flow, never at creation or by update.
-_APPROVAL_FLOW_FIELDS = ("approver", "approved_at", "content_hash")
+# Set only by the approvals module (`approvals request|approve|reject`),
+# never by `record create` or `record update`: attachment hashes are taken
+# from the files at request time, and the decision fields at approve/reject.
+APPROVAL_DECISION_FIELDS = ("approver", "approved_at", "content_hash", "rejected_at",
+                            "rejection_reason")
+APPROVAL_FLOW_FIELDS = (*APPROVAL_DECISION_FIELDS, "attachments")
 
+# Every demand number enters through `demand fetch` (R5), and the run spend
+# ledger is written only by `demand fetch` and `run start|finish` (R22).
+FETCH_FIELDS = ("demand", "pending_fetch")
+# The demand score is written only by `solstice score` (KTD5, KTD22).
+SCORE_FIELDS = ("score", "demand_score")
 _MANAGED: dict[str, tuple[str, ...]] = {
-    "problem": ("status", "refetch_failures"),
+    "problem": ("status", "refetch_failures", *FETCH_FIELDS, *SCORE_FIELDS),
     "product": ("status", "test_started_at", "awaiting_owner_from"),
-    "approval": ("status", *_APPROVAL_FLOW_FIELDS),
+    "approval": ("status", *APPROVAL_FLOW_FIELDS),
     "evidence": ("url", "fetched_at", "idempotency_key"),
+    "run": ("status", "spend_usd", "adapter_status", "finished_at"),
 }
 # Managed against `update`, but the caller supplies them when creating the record.
 _CALLER_PROVENANCE: dict[str, tuple[str, ...]] = {"evidence": ("url", "fetched_at")}
-_RESERVED_EVENTS = {"created", "updated", "transition", "migrated", "refetch_failed"}
+_RESERVED_EVENTS = {"created", "updated", "transition", "migrated", "refetch_failed",
+                    "demand_fetched", "fetch_failed", "spend_reserved", "spend_booked",
+                    "adapter_unavailable", "run_finished", "scored", "proforma_computed"}
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
-class RecordError(Exception):
-    """A record is invalid, missing, or at the wrong schema version."""
+class RecordError(SolsticeError):
+    """A record is invalid, missing, or at the wrong schema version.
+
+    `kind` is `invalid_record` unless set to `not_found` or `corrupt_history`."""
+
+    kind = "invalid_record"
 
 
-class LockError(Exception):
+class LockError(SolsticeError):
     """Another writer holds the workspace lock."""
+
+    kind = "lock_held"
+    exit_code = 3
 
 
 def now_utc() -> datetime:
@@ -123,15 +148,23 @@ def validate_record(entity: str, record: dict) -> list[str]:
 
 
 def _decision_rules(rec: dict) -> list[str]:
+    from solstice.brief import validate_brief
+
+    errs = validate_brief(rec["build_brief"]) if "build_brief" in rec else []
     if rec["verdict"] != "go":
-        return []
-    errs = []
+        if "build_brief" in rec:
+            errs.append("decision build_brief: only a go decision carries a Build Brief (R7)")
+        return errs
     pf = rec["pro_forma"]
-    if pf["gross_margin"] < 0.80:
-        errs.append(f"decision pro_forma: go needs gross margin >= 0.80 (R20), got {pf['gross_margin']}")
-    if pf["break_even_customers"] > 10:
-        errs.append(f"decision pro_forma: go needs break-even within 10 customers (R20), "
-                    f"got {pf['break_even_customers']}")
+    if pf["gross_margin"] < lifecycle.MARGIN_FLOOR:
+        errs.append(f"decision pro_forma: go needs gross margin >= {lifecycle.MARGIN_FLOOR:.2f} "
+                    f"(R20), got {pf['gross_margin']}")
+    if pf["break_even_customers"] is None:
+        errs.append(f"decision pro_forma: go needs break-even within {lifecycle.BREAK_EVEN_MAX} "
+                    f"customers (R20); a customer contributes nothing, so it never breaks even")
+    elif pf["break_even_customers"] > lifecycle.BREAK_EVEN_MAX:
+        errs.append(f"decision pro_forma: go needs break-even within {lifecycle.BREAK_EVEN_MAX} "
+                    f"customers (R20), got {pf['break_even_customers']}")
     failing = sorted(k for k, v in rec["checks"].items() if v != "pass")
     if failing:
         errs.append(f"decision checks: go needs every R6 check to pass; not passing: {', '.join(failing)}")
@@ -157,12 +190,7 @@ def _event_errors(entity: str, event: dict) -> list[str]:
 
 
 def launch_spend_limit(workspace: Path) -> float:
-    cfg = workspace / ".solstice" / "config.yaml"
-    if not cfg.is_file():
-        return DEFAULT_LAUNCH_SPEND_LIMIT_USD
-    data = yaml.safe_load(cfg.read_text()) or {}
-    value = (data.get("budgets") or {}).get("launch_spend_limit_usd")
-    return DEFAULT_LAUNCH_SPEND_LIMIT_USD if value is None else float(value)
+    return budget(load_config(workspace), "launch_spend_limit_usd", DEFAULT_LAUNCH_SPEND_LIMIT_USD)
 
 
 # --- lock -------------------------------------------------------------------
@@ -174,12 +202,22 @@ class Lock:
     A holder that crashes leaves a lock that the next writer reclaims once it
     has expired. While a live lock is held the writer polls until `wait`
     seconds pass, then raises LockError.
+
+    Reclaim and release are check-and-unlink steps, so each runs under an OS
+    advisory lock on `write.lock.guard`: the lock file is unlinked only while
+    it still holds the bytes the writer saw (the expired holder on reclaim,
+    the writer's own body on release). Two writers reclaiming the same
+    expired lock therefore cannot both proceed, and a writer whose lock
+    expired never deletes its successor's lock. Acquisition itself stays the
+    atomic `os.link`, outside the guard.
     """
 
     def __init__(self, workspace: Path, *, ttl: float, wait: float,
                  now: Callable[[], datetime], sleep: Callable[[float], None]):
         self.path = workspace / ".solstice" / "write.lock"
+        self.guard_path = self.path.with_name(self.path.name + ".guard")
         self.ttl, self.wait, self.now, self.sleep = ttl, wait, now, sleep
+        self._body: bytes | None = None
 
     def __enter__(self) -> Lock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -187,22 +225,24 @@ class Lock:
         while True:
             now = self.now()
             body = json.dumps({"pid": os.getpid(), "acquired_at": fmt_ts(now),
-                               "expires_at": fmt_ts(now + timedelta(seconds=self.ttl))})
+                               "expires_at": fmt_ts(now + timedelta(seconds=self.ttl)),
+                               "nonce": os.urandom(8).hex()}).encode()
             tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
-            tmp.write_text(body)
+            tmp.write_bytes(body)
             try:
                 os.link(tmp, self.path)  # atomic: fails if a lock exists, never half-written
             except FileExistsError:
-                holder = self._holder()
-                if holder == "gone":
-                    continue
+                raw, holder = self._holder()
+                if raw is None:
+                    continue  # released between our link and our read
                 if holder is None or parse_ts(holder["expires_at"]) <= now:
-                    self.path.unlink(missing_ok=True)  # expired or unreadable: reclaim
+                    self._unlink_if(raw)  # expired or unreadable: reclaim under the guard
                     continue
                 if waited >= self.wait:
                     raise LockError(
                         f"workspace is locked by another solstice writer (pid {holder.get('pid')}) "
-                        f"until {holder['expires_at']}; retry after it finishes or the lock expires"
+                        f"until {holder['expires_at']}; retry after it finishes or the lock expires",
+                        details={"pid": holder.get("pid"), "expires_at": holder["expires_at"]},
                     ) from None
                 step = min(0.2, self.wait - waited) or 0.2
                 self.sleep(step)
@@ -210,20 +250,40 @@ class Lock:
                 continue
             finally:
                 tmp.unlink(missing_ok=True)
+            self._body = body
             return self
 
     def __exit__(self, *exc) -> None:
-        self.path.unlink(missing_ok=True)
+        if self._body is not None:
+            self._unlink_if(self._body)
+            self._body = None
 
-    def _holder(self) -> dict | str | None:
+    def _holder(self) -> tuple[bytes | None, dict | None]:
+        """(raw bytes, parsed holder). Bytes are None when no lock file
+        exists; the holder is None when the file is unreadable."""
         try:
-            data = json.loads(self.path.read_text())
-            parse_ts(data["expires_at"])
-            return data
+            raw = self.path.read_bytes()
         except FileNotFoundError:
-            return "gone"
+            return None, None
+        try:
+            data = json.loads(raw)
+            parse_ts(data["expires_at"])
+            return raw, data
         except (ValueError, KeyError, TypeError):
-            return None
+            return raw, None
+
+    def _unlink_if(self, expected: bytes) -> None:
+        """Unlink the lock only while it still holds `expected`, under the guard."""
+        fd = os.open(self.guard_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                if self.path.read_bytes() == expected:
+                    self.path.unlink()
+            except FileNotFoundError:
+                pass
+        finally:
+            os.close(fd)  # closing the descriptor releases the flock
 
 
 # --- store ------------------------------------------------------------------
@@ -261,7 +321,8 @@ class Store:
     def get(self, entity: str, rid: str) -> dict:
         path = self._path(entity, rid)
         if not path.is_file():
-            raise RecordError(f"{entity} {rid} not found")
+            raise RecordError(f"{entity} {rid} not found", kind="not_found",
+                              details={"entity": entity, "id": rid})
         return self._load(entity, path)
 
     def list(self, entity: str, status: str | None = None) -> list[dict]:
@@ -275,7 +336,17 @@ class Store:
         path = self._events_path(entity, rid)
         if not path.is_file():
             return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        out = []
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                raise RecordError(f"{path}: line {n} is not valid JSON; the record's history is "
+                                  f"corrupt", kind="corrupt_history",
+                                  details={"path": str(path), "line": n}) from None
+        return out
 
     def _load(self, entity: str, path: Path) -> dict:
         try:
@@ -290,6 +361,24 @@ class Store:
     def create(self, entity: str, body: dict) -> dict:
         if not isinstance(body, dict):
             raise RecordError("record body must be a JSON object")
+        if entity == "approval" and any(body.get(k) is not None for k in APPROVAL_FLOW_FIELDS):
+            raise RecordError(f"{', '.join(APPROVAL_FLOW_FIELDS)} are set by the approvals flow "
+                              f"(`solstice approvals request|approve|reject`)")
+        managed = [k for k in body if k in _MANAGED.get(entity, ())
+                   and k not in ("status", *_CALLER_PROVENANCE.get(entity, ()))]
+        if managed:
+            raise RecordError(f"cannot set {', '.join(managed)} when creating a {entity} "
+                              f"(lifecycle-managed; set by `record transition` or the CLI"
+                              f"{_fetch_hint(entity, managed)})")
+        return self.create_managed(entity, body)
+
+    def create_managed(self, entity: str, body: dict) -> dict:
+        """Create a record whose body may carry CLI-managed fields.
+
+        For CLI modules that own those fields (`demand fetch`, `run start`);
+        the `record` command never calls this, so R5 holds at its surface."""
+        if not isinstance(body, dict):
+            raise RecordError("record body must be a JSON object")
         clash = [k for k in _IDENTITY if k in body]
         if clash:
             raise RecordError(f"fields set by the CLI cannot be supplied: {', '.join(clash)}")
@@ -297,26 +386,37 @@ class Store:
         if initial is not None and body.get("status") not in initial:
             raise RecordError(f"a new {entity} must start in {' or '.join(sorted(initial))}; "
                               f"later statuses are reached through `record transition`")
-        if entity == "approval" and any(body.get(k) is not None for k in _APPROVAL_FLOW_FIELDS):
-            raise RecordError("approver, approved_at and content_hash are set by the approvals flow")
-        managed = [k for k in body if k in _MANAGED.get(entity, ())
-                   and k not in ("status", *_CALLER_PROVENANCE.get(entity, ()))]
-        if managed:
-            raise RecordError(f"cannot set {', '.join(managed)} when creating a {entity} "
-                              f"(lifecycle-managed; set by `record transition` or the CLI)")
         with self.lock():
-            now = self.now()
-            rec = {"id": new_ulid(now), "schema_version": SCHEMA_VERSION,
-                   "created_at": fmt_ts(now), "updated_at": fmt_ts(now), **body}
-            if entity == "evidence":
-                rec["idempotency_key"] = evidence_key(rec)
-                for existing in self.list("evidence"):
-                    if existing.get("idempotency_key") == rec["idempotency_key"]:
-                        return existing
-            self._check(entity, rec)
-            self._write(entity, rec)
-            self._append(entity, rec["id"], {"type": "created"})
-            return rec
+            return self.insert_locked(entity, body)
+
+    def insert_locked(self, entity: str, body: dict, *,
+                      known_evidence: dict[str, dict] | None = None) -> dict:
+        """Write a new record; the caller has checked the body and holds
+        `self.lock()`. Evidence is idempotent on URL plus fetch date.
+
+        A caller inserting several evidence records under one lock passes
+        `known_evidence` from `evidence_index()`; new records are added to it."""
+        now = self.now()
+        rec = {"id": new_ulid(now), "schema_version": SCHEMA_VERSION,
+               "created_at": fmt_ts(now), "updated_at": fmt_ts(now), **body}
+        if entity == "evidence":
+            key = rec["idempotency_key"] = evidence_key(rec)
+            known = self.evidence_index() if known_evidence is None else known_evidence
+            if key in known:
+                return known[key]
+        self._check(entity, rec)
+        self._write(entity, rec)
+        self._append(entity, rec["id"], {"type": "created"})
+        if entity == "evidence" and known_evidence is not None:
+            known_evidence[key] = rec
+        return rec
+
+    def evidence_index(self) -> dict[str, dict]:
+        """{idempotency_key: first evidence record holding it}, in filename order."""
+        index: dict[str, dict] = {}
+        for ev in self.list("evidence"):
+            index.setdefault(ev.get("idempotency_key"), ev)
+        return index
 
     def update(self, entity: str, rid: str, patch: dict) -> dict:
         if not isinstance(patch, dict) or not patch:
@@ -324,7 +424,8 @@ class Store:
         blocked = [k for k in patch if k in _IDENTITY or k in _MANAGED.get(entity, ())]
         if blocked:
             raise RecordError(f"cannot update {', '.join(blocked)} on {entity} "
-                              f"(identity or lifecycle-managed; use `record transition`)")
+                              f"(identity or lifecycle-managed; use `record transition`"
+                              f"{_fetch_hint(entity, blocked)})")
         with self.lock():
             rec = {**self.get(entity, rid), **patch, "updated_at": fmt_ts(self.now())}
             self._check(entity, rec)
@@ -337,26 +438,34 @@ class Store:
         reason = fields.pop("reason", None)
         blocked = [k for k in fields if k in _IDENTITY or k in _MANAGED.get(entity, ())]
         if blocked:
-            raise RecordError(f"transition cannot set {', '.join(blocked)}")
+            raise RecordError(f"transition cannot set {', '.join(blocked)}"
+                              f"{_fetch_hint(entity, blocked)}")
         with self.lock():
-            rec = self.get(entity, rid)
-            ctx = lifecycle.Context(
-                now=self.now(),
-                events=self.events(entity, rid),
-                others=[p for p in self.list("product") if p["id"] != rid] if entity == "product" else [],
-                product_events=(self.events("product", rec["product_id"])
-                                if entity == "approval" and rec.get("product_id") else []),
-                launch_limit=launch_spend_limit(self.workspace),
-            )
-            new = lifecycle.apply(entity, {**rec, **fields}, to, ctx)
-            new["updated_at"] = fmt_ts(self.now())
-            self._check(entity, new)
-            self._write(entity, new)
-            event = {"type": "transition", "from": rec["status"], "to": to}
-            if reason:
-                event["reason"] = reason
-            self._append(entity, rid, event)
-            return new
+            return self.transition_locked(entity, rid, to, fields, reason=reason)
+
+    def transition_locked(self, entity: str, rid: str, to: str, fields: dict | None = None, *,
+                          reason: str | None = None, event: dict | None = None) -> dict:
+        """`transition` for a caller that already holds `self.lock()` and has
+        checked `fields`. `event` adds fields to the history entry."""
+        fields = fields or {}
+        rec = self.get(entity, rid)
+        ctx = lifecycle.Context(
+            now=self.now(),
+            events=self.events(entity, rid),
+            others=[p for p in self.list("product") if p["id"] != rid] if entity == "product" else [],
+            product_events=(self.events("product", rec["product_id"])
+                            if entity == "approval" and rec.get("product_id") else []),
+            launch_limit=launch_spend_limit(self.workspace),
+        )
+        new = lifecycle.apply(entity, {**rec, **fields}, to, ctx)
+        new["updated_at"] = fmt_ts(self.now())
+        self._check(entity, new)
+        self._write(entity, new)
+        entry = {**(event or {}), "type": "transition", "from": rec["status"], "to": to}
+        if reason:
+            entry["reason"] = reason
+        self._append(entity, rid, entry)
+        return new
 
     def record_refetch_failure(self, rid: str, error: str) -> dict:
         """Count one failed refetch run for a pending_evidence problem (R5)."""
@@ -364,13 +473,9 @@ class Store:
             rec = self.get("problem", rid)
             if rec["status"] != "pending_evidence":
                 raise RecordError(f"problem {rid} is {rec['status']}, not pending_evidence")
-            rec = {**rec, "refetch_failures": rec.get("refetch_failures", 0) + 1,
-                   "updated_at": fmt_ts(self.now())}
-            self._check("problem", rec)
-            self._write("problem", rec)
-            self._append("problem", rid, {"type": "refetch_failed", "error": error,
-                                          "count": rec["refetch_failures"]})
-            return rec
+            count = rec.get("refetch_failures", 0) + 1
+            return self.put_locked("problem", {**rec, "refetch_failures": count},
+                                   {"type": "refetch_failed", "error": error, "count": count})
 
     def add_event(self, entity: str, rid: str, event: dict) -> dict:
         if not isinstance(event, dict):
@@ -426,7 +531,8 @@ class Store:
                 ref = rec.get(field)
                 if ref and (target, ref) not in known:
                     errs.append(f"{entity} {path.stem}: {field} {ref} does not resolve to a {target}")
-            for ref in rec.get("evidence_ids") or []:
+            for ref in [*(rec.get("evidence_ids") or []),
+                        *((rec.get("build_brief") or {}).get("evidence_ids") or [])]:
                 if ("evidence", ref) not in known:
                     errs.append(f"{entity} {path.stem}: evidence_ids {ref} does not resolve")
         return errs
@@ -469,6 +575,17 @@ class Store:
                 migrated.append(rec["id"])
         return migrated, errors
 
+    def put_locked(self, entity: str, rec: dict, *events: dict) -> dict:
+        """Validate and write a whole record, appending `events` to its history.
+
+        For CLI modules that own managed fields; the caller holds `self.lock()`."""
+        rec = {**rec, "updated_at": fmt_ts(self.now())}
+        self._check(entity, rec)
+        self._write(entity, rec)
+        for event in events:
+            self._append(entity, rec["id"], event)
+        return rec
+
     # internals
 
     def _check(self, entity: str, rec: dict) -> None:
@@ -489,6 +606,16 @@ class Store:
         path = self._events_path(entity, rid)
         with path.open("a") as fh:
             fh.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def _fetch_hint(entity: str, fields) -> str:
+    if entity == "problem" and any(f in FETCH_FIELDS for f in fields):
+        return "; demand and pending_fetch are written only by `solstice demand fetch` (R5)"
+    if entity == "problem" and any(f in SCORE_FIELDS for f in fields):
+        return "; score and demand_score are written only by `solstice score`"
+    if entity == "run" and any(f != "status" for f in fields):
+        return "; the run spend ledger is written only by `demand fetch` and `run start|finish`"
+    return ""
 
 
 def evidence_key(rec: dict) -> str:

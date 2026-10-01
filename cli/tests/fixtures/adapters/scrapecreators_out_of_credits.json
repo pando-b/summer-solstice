@@ -1,0 +1,9 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "message": "Insufficient credits",
+    "success": false
+  },
+  "headers": {},
+  "status": 402
+}

@@ -1,0 +1,35 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "tweets": [
+      {
+        "legacy": {
+          "bookmark_count": 9,
+          "favorite_count": 210,
+          "full_text": "Synthetic post about example widgets.",
+          "reply_count": 14,
+          "retweet_count": 30
+        },
+        "rest_id": "1800000000000000001",
+        "views": {
+          "count": "12000"
+        }
+      },
+      {
+        "legacy": {
+          "bookmark_count": 0,
+          "favorite_count": 5,
+          "full_text": "Another synthetic post.",
+          "reply_count": 1,
+          "retweet_count": 0
+        },
+        "rest_id": "1800000000000000002",
+        "views": {
+          "count": "800"
+        }
+      }
+    ]
+  },
+  "headers": {},
+  "status": 200
+}

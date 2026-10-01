@@ -1,0 +1,14 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "description": [
+      "Domain not found"
+    ],
+    "errorCode": 404,
+    "title": "Not Found"
+  },
+  "headers": {
+    "Content-Type": "application/rdap+json"
+  },
+  "status": 404
+}
