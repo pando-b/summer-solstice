@@ -34,7 +34,8 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from solstice import __version__, approvals, demand, doctor, init, leakscan, score
+from solstice import (
+    __version__, approvals, brief, demand, doctor, init, leakscan, namecheck, proforma, score)
 from solstice.adapters import REGISTRY
 from solstice.errors import EX_SOFTWARE, EX_USAGE, SolsticeError, UsageError, emit
 from solstice.lifecycle import INITIAL
@@ -373,6 +374,43 @@ def _run_rubric(args: argparse.Namespace) -> int:
     return 0
 
 
+def _conf_namecheck(p: argparse.ArgumentParser) -> None:
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--wporg", metavar="SLUG", help="WordPress.org plugin slug")
+    target.add_argument("--domain", metavar="NAME", help="domain name, checked through RDAP")
+
+
+def _run_namecheck(args: argparse.Namespace) -> int:
+    deps = namecheck.Deps()
+    if args.wporg is not None:
+        _out(namecheck.check_wporg(args.wporg, deps))
+    else:
+        _out(namecheck.check_domain(args.domain, deps))
+    return 0
+
+
+def _conf_proforma(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--file", required=True, help="pro forma inputs JSON, or - for stdin")
+    p.add_argument("--decision", dest="decision_id",
+                   help="also write the pro forma into this decision")
+
+
+def _run_proforma(args: argparse.Namespace) -> int:
+    _out(proforma.run(_store(), _read_json(args.file), args.decision_id))
+    return 0
+
+
+def _conf_brief(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="action", required=True)
+    r = sub.add_parser("render", help="print a go decision's Build Brief as markdown")
+    r.add_argument("decision_id")
+
+
+def _run_brief(args: argparse.Namespace) -> int:
+    sys.stdout.write(brief.render(_store(), args.decision_id))
+    return 0
+
+
 Command = tuple[str, Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]]
 
 COMMANDS: dict[str, Command] = {
@@ -400,6 +438,12 @@ COMMANDS: dict[str, Command] = {
              lambda p: None, _run_rank),
     "rubric": ("install the packaged demand-score rubric into the workspace",
                _conf_rubric, _run_rubric),
+    "namecheck": ("availability of a WordPress.org slug or a domain: available, taken, "
+                  "or pending", _conf_namecheck, _run_namecheck),
+    "proforma": ("compute the R20 pro forma from inputs; optionally write it into a decision",
+                 _conf_proforma, _run_proforma),
+    "brief": ("render a go decision's Build Brief as markdown for ce-brainstorm",
+              _conf_brief, _run_brief),
 }
 
 

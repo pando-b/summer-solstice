@@ -1,0 +1,10 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "note": "no RDAP service known for this TLD"
+  },
+  "headers": {
+    "Content-Type": "text/plain"
+  },
+  "status": 404
+}

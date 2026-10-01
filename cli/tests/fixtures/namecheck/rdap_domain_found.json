@@ -1,0 +1,20 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "events": [
+      {
+        "eventAction": "registration",
+        "eventDate": "2024-03-01T00:00:00Z"
+      }
+    ],
+    "ldhName": "EXAMPLE-RESTOCK.COM",
+    "objectClassName": "domain",
+    "status": [
+      "client transfer prohibited"
+    ]
+  },
+  "headers": {
+    "Content-Type": "application/rdap+json"
+  },
+  "status": 200
+}

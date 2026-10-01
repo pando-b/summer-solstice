@@ -1,0 +1,15 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {
+    "closed": true,
+    "closed_date": "2025-06-01",
+    "error": "closed",
+    "name": "Example Closed Plugin",
+    "reason": "author-request",
+    "slug": "example-closed-plugin"
+  },
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "status": 200
+}

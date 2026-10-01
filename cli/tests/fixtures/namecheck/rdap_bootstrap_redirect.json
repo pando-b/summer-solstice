@@ -1,0 +1,8 @@
+{
+  "_fixture": "solstice-fixture: synthetic (hand-built; not a captured response)",
+  "body": {},
+  "headers": {
+    "Location": "https://rdap.registry.example/domain/example-restock.com"
+  },
+  "status": 302
+}

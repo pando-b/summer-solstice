@@ -85,7 +85,7 @@ _MANAGED: dict[str, tuple[str, ...]] = {
 _CALLER_PROVENANCE: dict[str, tuple[str, ...]] = {"evidence": ("url", "fetched_at")}
 _RESERVED_EVENTS = {"created", "updated", "transition", "migrated", "refetch_failed",
                     "demand_fetched", "fetch_failed", "spend_reserved", "spend_booked",
-                    "adapter_unavailable", "run_finished", "scored"}
+                    "adapter_unavailable", "run_finished", "scored", "proforma_computed"}
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -147,13 +147,20 @@ def validate_record(entity: str, record: dict) -> list[str]:
 
 
 def _decision_rules(rec: dict) -> list[str]:
+    from solstice.brief import validate_brief
+
+    errs = validate_brief(rec["build_brief"]) if "build_brief" in rec else []
     if rec["verdict"] != "go":
-        return []
-    errs = []
+        if "build_brief" in rec:
+            errs.append("decision build_brief: only a go decision carries a Build Brief (R7)")
+        return errs
     pf = rec["pro_forma"]
     if pf["gross_margin"] < 0.80:
         errs.append(f"decision pro_forma: go needs gross margin >= 0.80 (R20), got {pf['gross_margin']}")
-    if pf["break_even_customers"] > 10:
+    if pf["break_even_customers"] is None:
+        errs.append("decision pro_forma: go needs break-even within 10 customers (R20); "
+                    "a customer contributes nothing, so it never breaks even")
+    elif pf["break_even_customers"] > 10:
         errs.append(f"decision pro_forma: go needs break-even within 10 customers (R20), "
                     f"got {pf['break_even_customers']}")
     failing = sorted(k for k, v in rec["checks"].items() if v != "pass")
@@ -518,7 +525,8 @@ class Store:
                 ref = rec.get(field)
                 if ref and (target, ref) not in known:
                     errs.append(f"{entity} {path.stem}: {field} {ref} does not resolve to a {target}")
-            for ref in rec.get("evidence_ids") or []:
+            for ref in [*(rec.get("evidence_ids") or []),
+                        *((rec.get("build_brief") or {}).get("evidence_ids") or [])]:
                 if ("evidence", ref) not in known:
                     errs.append(f"{entity} {path.stem}: evidence_ids {ref} does not resolve")
         return errs
