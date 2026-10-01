@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "summer-solstice",
-      "description": "9 skills from market seed to shipped, sellable product (S0\u2192S1\u2192S2\u2192S4\u2192S5\u2192S6\u2192S11\u2192S15\u2192M2, rubric v3.1).",
-      "version": "1.2.0",
+      "description": "A generic, agent-native product factory that finds measured demand, qualifies and builds lean products with compound-engineering, launches them, and reviews revenue from typed records in a private workspace.",
+      "version": "2.0.0-dev",
       "source": "./"
     }
   ]

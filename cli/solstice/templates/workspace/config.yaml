@@ -1,0 +1,20 @@
+# Summer Solstice workspace config. Copied to .solstice/config.yaml by `solstice init`.
+# Keep this workspace private: it holds live product records and the leak denylist.
+
+# Where the workspace lives, relative to the directory that holds .solstice/.
+workspace_root: .
+
+budgets:
+  # Monthly cap on the factory's own running costs (data APIs, scrapers). Find
+  # starts on keyless sources and turns on a paid source only within this cap.
+  factory_monthly_cap_usd: 50
+  # Spend a product may make before a paid test proves people will pay.
+  launch_spend_limit_usd: 50
+  # Owner time value used in unit-economics pro formas.
+  owner_hourly_rate_usd: 100
+
+# Per-adapter settings (enable flags, per-run caps). Empty means defaults.
+adapters: {}
+
+# Scheduled runs registered on the owner's machine. Empty until configured.
+schedule: {}

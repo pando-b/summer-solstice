@@ -1,0 +1,33 @@
+{
+  "name": "Demand score",
+  "version": "4.0",
+  "formula": "score = 100 * (0.30*volume + 0.15*trend + 0.30*spend + 0.15*channel_reach + 0.10*gap) * pain_multiplier",
+  "components": [
+    {"id": "volume", "weight": 0.30, "range": [0, 1], "description": "How many people search for or ask about the problem."},
+    {"id": "trend", "weight": 0.15, "range": [0, 1], "description": "Whether that demand is growing, flat, or shrinking."},
+    {"id": "spend", "weight": 0.30, "range": [0, 1], "description": "Evidence that people already pay to solve the problem."},
+    {"id": "channel_reach", "weight": 0.15, "range": [0, 1], "description": "How precisely a low-cost channel reaches the buyers."},
+    {"id": "gap", "weight": 0.10, "range": [0, 1], "description": "How underserved the problem is by existing products."}
+  ],
+  "pain_multiplier": {
+    "default": 1.0,
+    "min": 0.5,
+    "max": 1.5,
+    "description": "Scales the weighted sum by how acute and urgent the pain is in the evidence."
+  },
+  "gates": [
+    {"id": "spend_floor", "field": "spend", "op": ">", "value": 0.3, "description": "No evidence of spend, no go."},
+    {"id": "score_floor", "field": "score", "op": ">=", "value": 55, "description": "Minimum demand score to qualify."}
+  ],
+  "calibration": {
+    "weights_min_outcomes": 3,
+    "structure_min_outcomes": 5,
+    "description": "The review skill changes weights only after n>=3 recorded outcomes, and adds or removes components or gates only after n>=5."
+  },
+  "lenses": [
+    {"id": "acquirability", "optional": true, "description": "Optional lens; not part of the score."}
+  ],
+  "changelog": [
+    {"version": "4.0", "change": "Demand score replaces the nine-criterion rubric."}
+  ]
+}

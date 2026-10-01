@@ -1,0 +1,4 @@
+# Compound-engineering artifacts from sessions in this checkout stay local:
+# .ce-artifacts/ is gitignored and CI fails if anything under it is tracked.
+# Plans and learnings about live products belong in the private workspace.
+docs_root: .ce-artifacts

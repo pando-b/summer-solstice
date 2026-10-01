@@ -58,7 +58,7 @@ def resolve_workspace(
     else:
         path = _from_config(cwd.resolve())
 
-    _refuse_plugin_checkout(path)
+    refuse_plugin_checkout(path)
     return path
 
 
@@ -97,7 +97,7 @@ def _read_config(cfg: Path, base: Path) -> Path:
     return _require_dir(path, str(cfg))
 
 
-def _refuse_plugin_checkout(path: Path) -> None:
+def refuse_plugin_checkout(path: Path) -> None:
     """Raise if `path` is inside any checkout (including outer, enclosing
     checkouts of a nested repo) whose remote is the plugin repo."""
     git = shutil.which("git")

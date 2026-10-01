@@ -1,0 +1,30 @@
+#!/bin/sh
+# Summer Solstice leak guard (KTD13). Fails closed: any error blocks the push.
+# Scans every commit being pushed (file contents, paths, and commit messages)
+# against the private workspace denylist and secret-pattern rules.
+# Never bypass with `git push --no-verify` on this repo.
+# Arm it with: solstice hooks install <this checkout> --workspace <private workspace>
+
+block() {
+  echo "pre-push: push BLOCKED: $1" >&2
+  exit 1
+}
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || block "not inside a git checkout"
+
+if [ -z "${SOLSTICE_WORKSPACE:-}" ]; then
+  SOLSTICE_WORKSPACE=$(git config --get solstice.workspace 2>/dev/null || true)
+fi
+if [ -n "${SOLSTICE_WORKSPACE:-}" ]; then
+  export SOLSTICE_WORKSPACE
+fi
+
+command -v uv >/dev/null 2>&1 || block "uv not found, so the leak scan cannot run (install uv)"
+
+# PYTHONPATH makes the checkout's own CLI importable even if the venv's
+# editable install is broken; stdin (git's ref list) passes straight through.
+PYTHONPATH="$root/cli${PYTHONPATH:+:$PYTHONPATH}" \
+  uv run --quiet --frozen --project "$root/cli" python -m solstice leakscan pre-push "$@"
+status=$?
+[ "$status" -eq 0 ] || block "leak scan failed (exit $status); see the findings above"
+exit 0
