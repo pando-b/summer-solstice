@@ -17,3 +17,6 @@ Thumbs.db
 *.skill
 ~$*
 .~lock.*
+
+# Compound-engineering session artifacts — never commit (KTD13)
+.ce-artifacts/

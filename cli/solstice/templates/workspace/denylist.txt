@@ -1,0 +1,9 @@
+# Private leak denylist. One term per line; lines starting with # are comments.
+#
+# The plugin repo's pre-push hook blocks any push whose commits (file contents,
+# file paths, or commit messages) contain one of these terms. Product names,
+# slugs, and domains from records/products/ and products/*/name-candidates.md
+# are added automatically; list anything else here, such as competitor names
+# in live use or private domains.
+#
+# This file never leaves the private workspace.

@@ -1,0 +1,5 @@
+# Copied to .gitignore by `solstice init`.
+.solstice/write.lock
+*.tmp
+.env*
+.DS_Store

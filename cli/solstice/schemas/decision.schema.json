@@ -1,0 +1,393 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summer-solstice.invalid/schemas/decision.schema.json",
+  "title": "Decision",
+  "type": "object",
+  "required": [
+    "id",
+    "schema_version",
+    "created_at",
+    "updated_at",
+    "verdict",
+    "reason",
+    "checks",
+    "operator_load",
+    "owner_prereqs"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/ulid"
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "created_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "updated_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "problem_id": {
+      "$ref": "#/$defs/ulid"
+    },
+    "product_id": {
+      "$ref": "#/$defs/ulid"
+    },
+    "verdict": {
+      "enum": [
+        "go",
+        "no_go",
+        "no_go_until_renamed"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checks": {
+      "type": "object",
+      "description": "R6 check results",
+      "required": [
+        "demand_score",
+        "proof_of_spend",
+        "channel",
+        "payment_rail",
+        "name_available",
+        "owner_prereqs",
+        "upfront_cash",
+        "operator_load"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "demand_score": {
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ]
+        },
+        "proof_of_spend": {
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ]
+        },
+        "channel": {
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ]
+        },
+        "payment_rail": {
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ]
+        },
+        "name_available": {
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ]
+        },
+        "owner_prereqs": {
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ]
+        },
+        "upfront_cash": {
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ]
+        },
+        "operator_load": {
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ]
+        }
+      }
+    },
+    "check_basis": {
+      "type": "object",
+      "description": "Citations (URLs or fetched values) behind each R6 check result",
+      "additionalProperties": false,
+      "properties": {
+        "demand_score": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "proof_of_spend": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "channel": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "payment_rail": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "name_available": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "owner_prereqs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "upfront_cash": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "operator_load": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "alive_bar": {
+      "$ref": "#/$defs/alive_bar"
+    },
+    "kill_window": {
+      "$ref": "#/$defs/kill_window"
+    },
+    "pro_forma": {
+      "type": "object",
+      "description": "R20 one-page pro forma",
+      "required": [
+        "price_usd",
+        "billing",
+        "fees_usd_per_customer",
+        "running_cost_usd_per_customer",
+        "support_cost_usd_per_customer",
+        "owner_rate_usd_per_hour",
+        "upfront_spend_usd",
+        "gross_margin",
+        "break_even_customers",
+        "customers_for_5k_mrr"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "price_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "billing": {
+          "enum": [
+            "monthly",
+            "yearly",
+            "one_time"
+          ]
+        },
+        "fees_usd_per_customer": {
+          "type": "number",
+          "minimum": 0
+        },
+        "running_cost_usd_per_customer": {
+          "type": "number",
+          "minimum": 0
+        },
+        "support_cost_usd_per_customer": {
+          "type": "number",
+          "minimum": 0
+        },
+        "owner_rate_usd_per_hour": {
+          "type": "number",
+          "minimum": 0
+        },
+        "upfront_spend_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "gross_margin": {
+          "type": "number",
+          "maximum": 1
+        },
+        "break_even_customers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "customers_for_5k_mrr": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "channel_capacity_customers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "operator_load": {
+      "type": "object",
+      "description": "R19 operator-load rating",
+      "required": [
+        "rating"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rating": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "pending"
+          ]
+        },
+        "support_volume": {
+          "type": "string"
+        },
+        "compliance_exposure": {
+          "type": "string"
+        },
+        "hands_on": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "owner_prereqs": {
+      "type": "array",
+      "description": "Owner queue until approval records exist (U9)",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "description"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "account",
+              "key",
+              "license",
+              "artwork",
+              "name",
+              "other"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cost_usd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "approval_id": {
+            "$ref": "#/$defs/ulid"
+          }
+        }
+      }
+    },
+    "slug_candidates": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "alive_bar": {
+      "type": "object",
+      "required": [
+        "metric",
+        "threshold"
+      ],
+      "properties": {
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "kill_window": {
+      "type": "object",
+      "required": [
+        "days"
+      ],
+      "description": "Starts at channel_live_at (R2)",
+      "properties": {
+        "days": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "go"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "pro_forma",
+          "alive_bar",
+          "kill_window"
+        ]
+      }
+    }
+  ]
+}
