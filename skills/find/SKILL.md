@@ -67,7 +67,7 @@ After every problem exists, make one `dataforseo_volume` call per problem with a
 
 ### 5. Rate and score (phase `score`)
 
-For each `found` problem, read it with `solstice record get problem <id>`, read its evidence, and rate spend, channel reach, gap, and pain against [rating anchors](references/rating-anchors.md). Pipe the ratings JSON to `solstice score <id> --ratings -`. Never rate volume or trend; the CLI measures them from the demand entries. A `pending_evidence` problem is not rated.
+For each `found` problem, read it with `solstice record get problem <id>`, read its evidence (each ID in `evidence_ids` with `solstice record get evidence <id>`, plus the quotes you saved with its `problem_id`), and rate spend, channel reach, gap, and pain against [rating anchors](references/rating-anchors.md). Pipe the ratings JSON to `solstice score <id> --ratings -`. Never rate volume or trend; the CLI measures them from the demand entries. A `pending_evidence` problem is not rated.
 
 ### 6. Rank and report (phase `rank`)
 

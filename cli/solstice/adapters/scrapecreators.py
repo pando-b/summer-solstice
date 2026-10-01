@@ -18,8 +18,8 @@ from __future__ import annotations
 import re
 
 from solstice.adapters.base import (
-    Adapter, Cost, Ctx, FetchFailed, Params, Request, Result, Unavailable, first, num,
-    raise_for_http, url_with)
+    OUT_OF_CREDITS, Adapter, Cost, Ctx, FetchFailed, Params, Request, Result, Unavailable, first,
+    num, raise_for_http, url_with)
 from solstice.errors import UsageError
 
 API = "https://api.scrapecreators.com"
@@ -67,7 +67,7 @@ class ScrapeCreators(Adapter):
             url = url_with(f"{API}{path}", {"query": query, **extra})
         resp = ctx.transport(Request("GET", url, headers={"x-api-key": ctx.creds[KEY]}))
         if resp.status == 402:
-            raise Unavailable("out of credits")
+            raise Unavailable(OUT_OF_CREDITS)
         raise_for_http(resp, label=self.label)
         data = resp.json()
         if not isinstance(data, dict):

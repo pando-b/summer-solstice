@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import shlex
 import shutil
+from functools import cache
 from pathlib import Path
 
 from solstice.adapters.base import Adapter, Cost, Ctx, FetchFailed, Params, Result, num
@@ -25,17 +26,25 @@ TIMEOUT_S = 600.0
 
 
 def discover(home: Path | None) -> list[str] | None:
+    """The engine under the user's skills, else under an installed plugin."""
+    argv = _discover(home)
+    return list(argv) if argv else None
+
+
+@cache
+def _discover(home: Path | None) -> tuple[str, str] | None:
+    """`discover`, cached per home so one CLI process resolves it once."""
     if home is None:
         return None
-    candidates = [home / ".claude" / "skills" / "last30days" / ENGINE]
-    plugins = home / ".claude" / "plugins"
-    if plugins.is_dir():
-        candidates += sorted(plugins.glob(f"**/skills/last30days/{ENGINE.as_posix()}"))
-    python = shutil.which("python3") or "python3"
-    for c in candidates:
-        if c.is_file():
-            return [python, str(c)]
-    return None
+    found = home / ".claude" / "skills" / "last30days" / ENGINE
+    if not found.is_file():
+        plugins = home / ".claude" / "plugins"
+        hits = (sorted(c for c in plugins.glob(f"**/skills/last30days/{ENGINE.as_posix()}")
+                       if c.is_file()) if plugins.is_dir() else [])
+        if not hits:
+            return None
+        found = hits[0]
+    return shutil.which("python3") or "python3", str(found)
 
 
 def command(cfg: dict, home: Path | None) -> list[str] | None:

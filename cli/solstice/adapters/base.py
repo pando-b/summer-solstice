@@ -17,8 +17,8 @@ passes the values in `Ctx.creds`. They raise:
 
 from __future__ import annotations
 
+import http.client
 import json
-import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -30,6 +30,10 @@ from typing import Any
 
 from solstice.errors import UsageError
 from solstice.lifecycle import fmt_ts
+
+# `Unavailable` reasons the run ledger recognizes.
+OUT_OF_CREDITS = "out of credits"
+BUDGET = "budget"
 
 USER_AGENT = "solstice-cli (+https://github.com/pando-b/summer-solstice)"
 DEFAULT_TIMEOUT = 60.0
@@ -73,19 +77,25 @@ class TransportError(Exception):
 Transport = Callable[[Request], Response]
 
 
-def http_transport(req: Request) -> Response:
-    """The real transport (stdlib urllib). HTTP error statuses come back as a
-    Response; only timeouts and connection failures raise."""
+def send(req: Request, open_fn: Callable[..., Any]) -> Response:
+    """Send `req` through `open_fn` (`urlopen` or an opener's `open`). HTTP
+    error statuses come back as a Response; only timeouts and connection
+    failures raise."""
     r = urllib.request.Request(req.url, data=req.body, method=req.method,
                                headers={"User-Agent": USER_AGENT, **req.headers})
     try:
-        with urllib.request.urlopen(r, timeout=req.timeout) as resp:  # noqa: S310 (https URLs only)
+        with open_fn(r, timeout=req.timeout) as resp:  # noqa: S310 (https URLs only)
             return Response(resp.status, dict(resp.headers), resp.read())
     except urllib.error.HTTPError as exc:
         return Response(exc.code, dict(exc.headers or {}), exc.read() or b"")
-    except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         reason = getattr(exc, "reason", exc)
         raise TransportError(f"{type(exc).__name__}: {reason}") from None
+
+
+def http_transport(req: Request) -> Response:
+    """The real transport (stdlib urllib, following redirects)."""
+    return send(req, urllib.request.urlopen)
 
 
 # Runner for local engines: (argv, timeout) -> (exit code, stdout, stderr).

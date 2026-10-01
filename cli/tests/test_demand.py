@@ -16,6 +16,7 @@ from solstice.__main__ import main
 from solstice.adapters import REGISTRY
 from solstice.adapters.base import Request, Response, TransportError
 from solstice.errors import SolsticeError
+from solstice.workspace import load_config
 
 FIX = Path(__file__).parent / "fixtures" / "adapters"
 ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
@@ -522,7 +523,7 @@ def _reserve_in_child(ws, run_id, usd, barrier, results):
     barrier.wait()
     try:
         demand.reserve(store, run_id, REGISTRY["dataforseo_volume"], usd,
-                       demand.load_config(ws))
+                       load_config(ws))
         results.put("ok")
     except SolsticeError as exc:
         results.put(exc.kind)
@@ -674,3 +675,37 @@ def test_cli_record_update_cannot_rewrite_the_run_ledger(cli, tmp_path, patch):
     body.write_text(json.dumps(patch))
     code, _, err = cli("record", "update", "run", run["id"], "--file", str(body))
     assert code == 1 and json.loads(err)["error"]["kind"] == "invalid_record"
+
+
+# --- an exception outside the expected set still settles the run -------------
+
+
+def test_unexpected_transport_exception_is_failed_and_settles_the_run(store, cfg, deps_for):
+    import http.client
+
+    deps, _ = deps_for(http.client.IncompleteRead(b"partial"))
+    with pytest.raises(SolsticeError) as exc:
+        demand.fetch(store, "scrapecreators", q("x", platform="reddit"), new_problem="Example",
+                     deps=deps)
+    assert exc.value.kind == "adapter" and exc.value.details["status"] == "failed"
+    (prob,) = store.list("problem")
+    assert prob["status"] == "pending_evidence"
+    (run,) = store.list("run")
+    st = run["adapter_status"]["scrapecreators"]
+    assert st["status"] == "failed" and st["failures"] == 1
+    assert run["status"] != "complete"
+
+
+def test_engine_that_cannot_start_is_failed_not_a_crash(store, cfg, deps_for, tmp_path):
+    def runner(argv, timeout):
+        raise PermissionError(13, "Permission denied", argv[0])
+
+    _config(cfg, adapters={"last30days": {"command": ["example-engine"], "usd_per_run": 0.2}})
+    deps, _ = deps_for(runner=runner)
+    prob = store.create_managed("problem", f.problem())
+    with pytest.raises(SolsticeError) as exc:
+        demand.fetch(store, "last30days", q("x"), problem_id=prob["id"], deps=deps)
+    assert exc.value.kind == "adapter" and exc.value.details["status"] == "failed"
+    (run,) = store.list("run")
+    assert run["adapter_status"]["last30days"]["status"] == "failed"
+    assert run["status"] != "complete"

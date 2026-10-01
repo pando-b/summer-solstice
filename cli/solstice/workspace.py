@@ -102,6 +102,31 @@ def _read_config(cfg: Path, base: Path) -> Path:
     return _require_dir(path, str(cfg))
 
 
+def load_config(workspace: Path) -> dict:
+    """The workspace's `.solstice/config.yaml` as a mapping ({} when absent)."""
+    from solstice.state import RecordError  # state imports this module
+
+    path = Path(workspace) / CONFIG_DIR / CONFIG_FILE
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        raise RecordError(f"cannot read {path}: {exc}") from exc
+    return data if isinstance(data, dict) else {}
+
+
+def adapter_cfg(cfg: dict, name: str) -> dict:
+    section = (cfg.get("adapters") or {}).get(name)
+    return section if isinstance(section, dict) else {}
+
+
+def budget(cfg: dict, key: str, default: float) -> float:
+    """`budgets.<key>` as a float, or `default` when unset."""
+    value = (cfg.get("budgets") or {}).get(key)
+    return default if value is None else float(value)
+
+
 def refuse_plugin_checkout(path: Path) -> None:
     """Raise if `path` is inside any checkout (including outer, enclosing
     checkouts of a nested repo) whose remote is the plugin repo.

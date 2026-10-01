@@ -21,20 +21,17 @@ from __future__ import annotations
 
 import json
 import re
-import socket
-import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from solstice.adapters.base import (
-    USER_AGENT, Request, Response, Transport, TransportError, url_with)
+from solstice.adapters.base import Request, Response, Transport, TransportError, send, url_with
+from solstice.adapters.wporg import API as WPORG_API
 from solstice.errors import UsageError
 from solstice.lifecycle import fmt_ts
 from solstice.state import now_utc
 
-WPORG_API = "https://api.wordpress.org/plugins/info/1.2/"
 RDAP_BOOTSTRAP = "https://rdap.org/domain/"
 TIMEOUT = 20.0
 MAX_REDIRECTS = 3
@@ -53,17 +50,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def no_redirect_transport(req: Request) -> Response:
     """Like `base.http_transport`, but a 3xx comes back as a Response."""
-    opener = urllib.request.build_opener(_NoRedirect)
-    r = urllib.request.Request(req.url, data=req.body, method=req.method,
-                               headers={"User-Agent": USER_AGENT, **req.headers})
-    try:
-        with opener.open(r, timeout=req.timeout) as resp:
-            return Response(resp.status, dict(resp.headers), resp.read())
-    except urllib.error.HTTPError as exc:
-        return Response(exc.code, dict(exc.headers or {}), exc.read() or b"")
-    except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError) as exc:
-        reason = getattr(exc, "reason", exc)
-        raise TransportError(f"{type(exc).__name__}: {reason}") from None
+    return send(req, urllib.request.build_opener(_NoRedirect).open)
 
 
 @dataclass

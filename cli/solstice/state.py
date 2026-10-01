@@ -26,12 +26,12 @@ from functools import cache
 from importlib import resources
 from pathlib import Path
 
-import yaml
 from jsonschema import Draft202012Validator
 
 from solstice import lifecycle
 from solstice.errors import SolsticeError
 from solstice.lifecycle import fmt_ts, parse_ts  # noqa: F401  (re-exported)
+from solstice.workspace import budget, load_config
 
 SCHEMA_VERSION = 1
 
@@ -66,8 +66,9 @@ _IDENTITY = ("id", "schema_version", "created_at", "updated_at")
 # Set only by the approvals module (`approvals request|approve|reject`),
 # never by `record create` or `record update`: attachment hashes are taken
 # from the files at request time, and the decision fields at approve/reject.
-_APPROVAL_FLOW_FIELDS = ("approver", "approved_at", "content_hash", "rejected_at",
-                         "rejection_reason", "attachments")
+APPROVAL_DECISION_FIELDS = ("approver", "approved_at", "content_hash", "rejected_at",
+                            "rejection_reason")
+APPROVAL_FLOW_FIELDS = (*APPROVAL_DECISION_FIELDS, "attachments")
 
 # Every demand number enters through `demand fetch` (R5), and the run spend
 # ledger is written only by `demand fetch` and `run start|finish` (R22).
@@ -77,7 +78,7 @@ SCORE_FIELDS = ("score", "demand_score")
 _MANAGED: dict[str, tuple[str, ...]] = {
     "problem": ("status", "refetch_failures", *FETCH_FIELDS, *SCORE_FIELDS),
     "product": ("status", "test_started_at", "awaiting_owner_from"),
-    "approval": ("status", *_APPROVAL_FLOW_FIELDS),
+    "approval": ("status", *APPROVAL_FLOW_FIELDS),
     "evidence": ("url", "fetched_at", "idempotency_key"),
     "run": ("status", "spend_usd", "adapter_status", "finished_at"),
 }
@@ -155,14 +156,15 @@ def _decision_rules(rec: dict) -> list[str]:
             errs.append("decision build_brief: only a go decision carries a Build Brief (R7)")
         return errs
     pf = rec["pro_forma"]
-    if pf["gross_margin"] < 0.80:
-        errs.append(f"decision pro_forma: go needs gross margin >= 0.80 (R20), got {pf['gross_margin']}")
+    if pf["gross_margin"] < lifecycle.MARGIN_FLOOR:
+        errs.append(f"decision pro_forma: go needs gross margin >= {lifecycle.MARGIN_FLOOR:.2f} "
+                    f"(R20), got {pf['gross_margin']}")
     if pf["break_even_customers"] is None:
-        errs.append("decision pro_forma: go needs break-even within 10 customers (R20); "
-                    "a customer contributes nothing, so it never breaks even")
-    elif pf["break_even_customers"] > 10:
-        errs.append(f"decision pro_forma: go needs break-even within 10 customers (R20), "
-                    f"got {pf['break_even_customers']}")
+        errs.append(f"decision pro_forma: go needs break-even within {lifecycle.BREAK_EVEN_MAX} "
+                    f"customers (R20); a customer contributes nothing, so it never breaks even")
+    elif pf["break_even_customers"] > lifecycle.BREAK_EVEN_MAX:
+        errs.append(f"decision pro_forma: go needs break-even within {lifecycle.BREAK_EVEN_MAX} "
+                    f"customers (R20), got {pf['break_even_customers']}")
     failing = sorted(k for k, v in rec["checks"].items() if v != "pass")
     if failing:
         errs.append(f"decision checks: go needs every R6 check to pass; not passing: {', '.join(failing)}")
@@ -188,12 +190,7 @@ def _event_errors(entity: str, event: dict) -> list[str]:
 
 
 def launch_spend_limit(workspace: Path) -> float:
-    cfg = workspace / ".solstice" / "config.yaml"
-    if not cfg.is_file():
-        return DEFAULT_LAUNCH_SPEND_LIMIT_USD
-    data = yaml.safe_load(cfg.read_text()) or {}
-    value = (data.get("budgets") or {}).get("launch_spend_limit_usd")
-    return DEFAULT_LAUNCH_SPEND_LIMIT_USD if value is None else float(value)
+    return budget(load_config(workspace), "launch_spend_limit_usd", DEFAULT_LAUNCH_SPEND_LIMIT_USD)
 
 
 # --- lock -------------------------------------------------------------------
@@ -364,8 +361,8 @@ class Store:
     def create(self, entity: str, body: dict) -> dict:
         if not isinstance(body, dict):
             raise RecordError("record body must be a JSON object")
-        if entity == "approval" and any(body.get(k) is not None for k in _APPROVAL_FLOW_FIELDS):
-            raise RecordError(f"{', '.join(_APPROVAL_FLOW_FIELDS)} are set by the approvals flow "
+        if entity == "approval" and any(body.get(k) is not None for k in APPROVAL_FLOW_FIELDS):
+            raise RecordError(f"{', '.join(APPROVAL_FLOW_FIELDS)} are set by the approvals flow "
                               f"(`solstice approvals request|approve|reject`)")
         managed = [k for k in body if k in _MANAGED.get(entity, ())
                    and k not in ("status", *_CALLER_PROVENANCE.get(entity, ()))]
@@ -392,21 +389,34 @@ class Store:
         with self.lock():
             return self.insert_locked(entity, body)
 
-    def insert_locked(self, entity: str, body: dict) -> dict:
+    def insert_locked(self, entity: str, body: dict, *,
+                      known_evidence: dict[str, dict] | None = None) -> dict:
         """Write a new record; the caller has checked the body and holds
-        `self.lock()`. Evidence is idempotent on URL plus fetch date."""
+        `self.lock()`. Evidence is idempotent on URL plus fetch date.
+
+        A caller inserting several evidence records under one lock passes
+        `known_evidence` from `evidence_index()`; new records are added to it."""
         now = self.now()
         rec = {"id": new_ulid(now), "schema_version": SCHEMA_VERSION,
                "created_at": fmt_ts(now), "updated_at": fmt_ts(now), **body}
         if entity == "evidence":
-            rec["idempotency_key"] = evidence_key(rec)
-            for existing in self.list("evidence"):
-                if existing.get("idempotency_key") == rec["idempotency_key"]:
-                    return existing
+            key = rec["idempotency_key"] = evidence_key(rec)
+            known = self.evidence_index() if known_evidence is None else known_evidence
+            if key in known:
+                return known[key]
         self._check(entity, rec)
         self._write(entity, rec)
         self._append(entity, rec["id"], {"type": "created"})
+        if entity == "evidence" and known_evidence is not None:
+            known_evidence[key] = rec
         return rec
+
+    def evidence_index(self) -> dict[str, dict]:
+        """{idempotency_key: first evidence record holding it}, in filename order."""
+        index: dict[str, dict] = {}
+        for ev in self.list("evidence"):
+            index.setdefault(ev.get("idempotency_key"), ev)
+        return index
 
     def update(self, entity: str, rid: str, patch: dict) -> dict:
         if not isinstance(patch, dict) or not patch:
@@ -463,13 +473,9 @@ class Store:
             rec = self.get("problem", rid)
             if rec["status"] != "pending_evidence":
                 raise RecordError(f"problem {rid} is {rec['status']}, not pending_evidence")
-            rec = {**rec, "refetch_failures": rec.get("refetch_failures", 0) + 1,
-                   "updated_at": fmt_ts(self.now())}
-            self._check("problem", rec)
-            self._write("problem", rec)
-            self._append("problem", rid, {"type": "refetch_failed", "error": error,
-                                          "count": rec["refetch_failures"]})
-            return rec
+            count = rec.get("refetch_failures", 0) + 1
+            return self.put_locked("problem", {**rec, "refetch_failures": count},
+                                   {"type": "refetch_failed", "error": error, "count": count})
 
     def add_event(self, entity: str, rid: str, event: dict) -> dict:
         if not isinstance(event, dict):

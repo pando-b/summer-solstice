@@ -37,6 +37,7 @@ from pathlib import Path
 from solstice import (
     __version__, approvals, brief, demand, doctor, init, leakscan, namecheck, proforma, score)
 from solstice.adapters import REGISTRY
+from solstice.adapters.base import Params
 from solstice.errors import EX_SOFTWARE, EX_USAGE, SolsticeError, UsageError, emit
 from solstice.lifecycle import INITIAL
 from solstice.state import ENTITIES, RecordError, Store, load_schema
@@ -210,30 +211,26 @@ def _report_findings(findings, header: str) -> None:
         print(f"  {f}", file=sys.stderr)
 
 
+def _scan_report(scan: Callable[[], list], what: str, clean: str) -> int:
+    """Run a tree or commit-message scan: 2 if it cannot run, 1 on findings, else 0."""
+    try:
+        findings = scan()
+    except leakscan.LeakscanError as exc:
+        print(f"solstice leakscan: {exc}", file=sys.stderr)
+        return 2
+    if findings:
+        _report_findings(findings, f"leakscan: {len(findings)} finding(s){what}:")
+        return 1
+    print(f"leakscan: {clean} clean")
+    return 0
+
+
 def _run_leakscan(args: argparse.Namespace) -> int:
     if args.action == "tree":
-        try:
-            findings = leakscan.scan_tree(args.root)
-        except leakscan.LeakscanError as exc:
-            print(f"solstice leakscan: {exc}", file=sys.stderr)
-            return 2
-        if findings:
-            _report_findings(findings, f"leakscan: {len(findings)} finding(s):")
-            return 1
-        print("leakscan: tree clean")
-        return 0
-
+        return _scan_report(lambda: leakscan.scan_tree(args.root), "", "tree")
     if args.action == "commits":
-        try:
-            findings = leakscan.scan_commit_messages(Path.cwd(), args.range)
-        except leakscan.LeakscanError as exc:
-            print(f"solstice leakscan: {exc}", file=sys.stderr)
-            return 2
-        if findings:
-            _report_findings(findings, f"leakscan: {len(findings)} finding(s) in commit messages:")
-            return 1
-        print("leakscan: commit messages clean")
-        return 0
+        return _scan_report(lambda: leakscan.scan_commit_messages(Path.cwd(), args.range),
+                            " in commit messages", "commit messages")
 
     blocked = "solstice leakscan: push BLOCKED"
     try:
@@ -280,9 +277,9 @@ def _run_demand(args: argparse.Namespace) -> int:
         raise UsageError("--title applies only with --new-problem")
     if args.new_problem and not args.title:
         raise UsageError("--new-problem needs --title")
-    params = demand.Params(queries=args.query, handle=args.handle, platform=args.platform,
-                           metric=args.metric, value=args.value, unit=args.unit, url=args.url,
-                           source=args.source)
+    params = Params(queries=args.query, handle=args.handle, platform=args.platform,
+                    metric=args.metric, value=args.value, unit=args.unit, url=args.url,
+                    source=args.source)
     _out(demand.fetch(store, args.adapter, params, deps=deps, run_id=args.run_id,
                       new_problem=args.title if args.new_problem else None,
                       problem_id=args.problem_id))

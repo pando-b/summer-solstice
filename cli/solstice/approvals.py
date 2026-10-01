@@ -39,7 +39,7 @@ from solstice import canonical
 from solstice.errors import SolsticeError
 from solstice.lifecycle import BUY_SIGNAL_KINDS, PRODUCT_TERMINAL
 from solstice.state import (
-    _APPROVAL_FLOW_FIELDS,
+    APPROVAL_DECISION_FIELDS,
     RecordError,
     Store,
     fmt_ts,
@@ -83,11 +83,8 @@ class Deps:
 
 
 def file_sha256(path: Path) -> str:
-    h = hashlib.sha256()
     with Path(path).open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
+        return hashlib.file_digest(fh, "sha256").hexdigest()
 
 
 def _attachment_file(workspace: Path, rel: str) -> tuple[str, Path]:
@@ -135,7 +132,7 @@ def request(store: Store, body: dict) -> dict:
     """Queue an approval item. Skills and scheduled runs may call this."""
     if not isinstance(body, dict):
         raise RecordError("approval body must be a JSON object")
-    flow = [k for k in _APPROVAL_FLOW_FIELDS if k != "attachments" and body.get(k) is not None]
+    flow = [k for k in APPROVAL_DECISION_FIELDS if body.get(k) is not None]
     if flow:
         raise RecordError(f"cannot set {', '.join(flow)}: set by the approvals flow at approve/reject")
     paths = body.get("attachments") or []
@@ -182,13 +179,18 @@ def _decidable(rec: dict, action: str) -> None:
                             details={"id": rec["id"], "status": rec["status"]})
 
 
-def _changed_attachments(store: Store, rec: dict) -> list[str]:
-    changed = []
+def _hash_attachments(store: Store, rec: dict) -> tuple[list[str], list[tuple[str, str | None]]]:
+    """One hashing pass: (paths changed or missing since the request,
+    [(stored path, current sha256 or None when missing)])."""
+    root = store.workspace.resolve()
+    changed, hashed = [], []
     for a in rec.get("attachments") or []:
-        full = (store.workspace.resolve() / a["path"]).resolve()
-        if not full.is_file() or file_sha256(full) != a["sha256"]:
+        full = (root / a["path"]).resolve()
+        digest = file_sha256(full) if full.is_file() else None
+        if digest is None or digest != a["sha256"]:
             changed.append(a["path"])
-    return changed
+        hashed.append((a["path"], digest))
+    return changed, hashed
 
 
 def _display(rec: dict, digest: str) -> str:
@@ -212,13 +214,15 @@ def approve(store: Store, rid: str, deps: Deps) -> dict:
     _owner_terminal(deps, "approve")
     rec = store.get("approval", rid)
     _decidable(rec, "approve")
-    changed = _changed_attachments(store, rec)
+    changed, hashed = _hash_attachments(store, rec)
     if changed:
         raise ApprovalError(
             f"approve refused: attachment(s) changed since the request: {', '.join(changed)}; "
             f"request a new approval for the new files",
             details={"id": rid, "changed": changed})
-    digest = content_hash(store, rec)
+    current = [{"path": _attachment_file(store.workspace, path)[0], "sha256": sha}
+               for path, sha in hashed]
+    digest = canonical.canonical_hash(hash_material(rec, current))
     typed = (deps.ask(_display(rec, digest)) or "").strip().lower()
     if typed != digest[:PREFIX_LEN]:
         raise ApprovalError("approve refused: the typed prefix does not match the content hash; "
@@ -286,32 +290,44 @@ def _aging(rec: dict, product: dict | None, product_events: list[dict], now: dat
             "park_at": fmt_ts(start + PARK_AFTER) if prereq else None, "parks": parks}
 
 
-def _product(store: Store, pid: str | None) -> tuple[dict | None, list[dict]]:
+_Products = dict[str, tuple[dict | None, list[dict]]]
+
+
+def _product(store: Store, pid: str | None,
+             cache: _Products | None = None) -> tuple[dict | None, list[dict]]:
+    """(product, its events), memoized in `cache` for one list or show call."""
     if not pid:
         return None, []
+    if cache is not None and pid in cache:
+        return cache[pid]
     try:
-        return store.get("product", pid), store.events("product", pid)
+        found = store.get("product", pid), store.events("product", pid)
     except RecordError as exc:
-        if exc.kind == "not_found":
-            return None, []
-        raise
+        if exc.kind != "not_found":
+            raise
+        found = None, []
+    if cache is not None:
+        cache[pid] = found
+    return found
 
 
-def _aging_of(store: Store, rec: dict, limit: float) -> dict | None:
-    product, events = _product(store, rec.get("product_id"))
+def _aging_of(store: Store, rec: dict, limit: float,
+              cache: _Products | None = None) -> dict | None:
+    product, events = _product(store, rec.get("product_id"), cache)
     return _aging(rec, product, events, store.now(), limit)
 
 
-def _park_due(store: Store, limit: float, only: str | None = None) -> None:
-    """Move products of 14-day-old open owner_prereqs to awaiting_owner.
+def _park_due(store: Store, limit: float, pending: list[dict], cache: _Products) -> bool:
+    """Move products of 14-day-old open owner_prereqs in `pending` to
+    awaiting_owner. True when any was due: `cache` is then cleared, and the
+    caller re-reads what it shows.
 
-    Checked again under the workspace lock, so concurrent readers move a
-    product once and a second read makes no change."""
-    pending = [r for r in store.list("approval", status="pending")
-               if r["subtype"] == "owner_prereq" and (only is None or r["id"] == only)]
-    due = [r["id"] for r in pending if (_aging_of(store, r, limit) or {}).get("parks")]
+    Checked again under the workspace lock with fresh reads, so concurrent
+    readers move a product once and a second read makes no change."""
+    due = [r["id"] for r in pending
+           if r["subtype"] == "owner_prereq" and (_aging_of(store, r, limit, cache) or {}).get("parks")]
     if not due:
-        return
+        return False
     with store.lock():
         for aid in due:
             rec = store.get("approval", aid)
@@ -319,10 +335,12 @@ def _park_due(store: Store, limit: float, only: str | None = None) -> None:
                 continue
             store.transition_locked("product", rec["product_id"], "awaiting_owner",
                                     reason=PARK_REASON, event={"approval_id": aid})
+    cache.clear()
+    return True
 
 
-def _item(store: Store, rec: dict, limit: float) -> dict:
-    aging = _aging_of(store, rec, limit)
+def _item(store: Store, rec: dict, limit: float, cache: _Products) -> dict:
+    aging = _aging_of(store, rec, limit, cache)
     if aging is not None:
         aging = {k: v for k, v in aging.items() if k != "parks"}
     return {**rec, "aging": aging}
@@ -337,13 +355,17 @@ def _order(item: dict) -> tuple:
 def list_queue(store: Store, status: str = "pending") -> list[dict]:
     """The owner queue: nudged items first, then oldest first. `status` may be `all`."""
     limit = launch_spend_limit(store.workspace)
-    _park_due(store, limit)
+    cache: _Products = {}
+    _park_due(store, limit, store.list("approval", status="pending"), cache)
     recs = store.list("approval", status=None if status == "all" else status)
-    return sorted((_item(store, r, limit) for r in recs), key=_order)
+    return sorted((_item(store, r, limit, cache) for r in recs), key=_order)
 
 
 def show(store: Store, rid: str) -> dict:
     limit = launch_spend_limit(store.workspace)
-    store.get("approval", rid)
-    _park_due(store, limit, only=rid)
-    return _item(store, store.get("approval", rid), limit)
+    cache: _Products = {}
+    rec = store.get("approval", rid)
+    if (rec["status"] == "pending" and rec["subtype"] == "owner_prereq"
+            and _park_due(store, limit, [rec], cache)):
+        rec = store.get("approval", rid)
+    return _item(store, rec, limit, cache)

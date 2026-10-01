@@ -15,6 +15,9 @@ from solstice.errors import SolsticeError
 LIVE_CAP = 3
 TEST_WINDOW = timedelta(days=14)
 PRE_ORDERS_TO_UNLOCK = 3
+# The R20 go gate: gross margin floor and the most customers to break even.
+MARGIN_FLOOR = 0.80
+BREAK_EVEN_MAX = 10
 
 # Paid pre-sale signals (R21). paid_conversion is a buy signal (R18) but not a pre-order.
 PRE_ORDER_KINDS = {"pre_order", "founding_member"}

@@ -27,12 +27,12 @@ rejecting is Qualify's call.
 from __future__ import annotations
 
 import json
+import operator
 import os
 import re
 from importlib import resources
 from pathlib import Path
 
-from solstice.errors import SolsticeError
 from solstice.state import RecordError, Store, fmt_ts
 from solstice.workspace import WorkspaceError
 
@@ -40,10 +40,12 @@ MIN_RUBRIC = (4, 1)
 RUBRIC_FILE = "rubric.json"
 MEASURED = ("volume", "trend")
 RATED = ("spend", "channel_reach", "gap", "pain")
+# Rated components that carry a weight; pain is a multiplier instead.
+WEIGHTED_RATED = ("spend", "channel_reach", "gap")
 INSTALL = "run `solstice rubric install`"
 _CONF_RANK = {"low": 0, "medium": 1, "high": 2}
-_OPS = {">": float.__gt__, ">=": float.__ge__, "<": float.__lt__, "<=": float.__le__,
-        "==": float.__eq__}
+_OPS = {">": operator.gt, ">=": operator.ge, "<": operator.lt, "<=": operator.le,
+        "==": operator.eq}
 
 __all__ = ["compute", "install_rubric", "load_rubric", "packaged_rubric", "rank", "score_problem"]
 
@@ -127,7 +129,7 @@ def _parts(rubric: dict) -> dict:
     except (KeyError, TypeError, ValueError) as exc:
         raise WorkspaceError(f"rubric.json is malformed ({type(exc).__name__}: {exc}); "
                              f"fix it or {INSTALL} over an older copy") from None
-    missing = [c for c in (*MEASURED, *RATED[:3]) if c not in weights]
+    missing = [c for c in (*MEASURED, *WEIGHTED_RATED) if c not in weights]
     if missing:
         raise WorkspaceError(f"rubric.json has no weight for {', '.join(missing)}")
     return parts
@@ -170,15 +172,11 @@ def _measure(entries: list[dict], bands: dict, cap: float) -> dict:
 def _evidence_on(store: Store, problem: dict) -> dict[str, dict]:
     """Evidence on the problem: listed in `evidence_ids`, or pointing back
     through `problem_id`. A listed ID with no record maps to {}."""
-    out: dict[str, dict] = {}
-    for eid in problem.get("evidence_ids") or []:
-        try:
-            out[eid] = store.get("evidence", eid)
-        except SolsticeError:
-            out[eid] = {}
-    for ev in store.list("evidence"):
+    listed = {ev["id"]: ev for ev in store.list("evidence")}
+    out = {eid: listed.get(eid, {}) for eid in problem.get("evidence_ids") or []}
+    for eid, ev in listed.items():
         if ev.get("problem_id") == problem["id"]:
-            out[ev["id"]] = ev
+            out[eid] = ev
     return out
 
 
@@ -219,7 +217,9 @@ def _check_ratings(ratings, problem: dict, evidence: dict[str, dict], parts: dic
             errs.append(f"{comp}: citations not on this problem: {', '.join(map(str, bad))}")
             continue
         if comp == "spend" and a is not None and a > 0:
-            metric = lambda c: (entries.get(c) or evidence.get(c) or {}).get("metric")
+            def metric(c: str) -> str | None:
+                return (entries.get(c) or evidence.get(c) or {}).get("metric")
+
             if not any(metric(c) in parts["spend_metrics"] for c in cites):
                 errs.append(f"spend {a} needs at least one citation whose metric is a spend type "
                             f"({', '.join(sorted(parts['spend_metrics']))}); engagement and "
@@ -230,13 +230,15 @@ def _check_ratings(ratings, problem: dict, evidence: dict[str, dict], parts: dic
 # --- scoring ---------------------------------------------------------------------------------
 
 
-def compute(problem: dict, ratings: dict, rubric: dict, *, scored_at: str) -> dict:
-    """The score block for a problem whose ratings were already checked."""
-    parts = _parts(rubric)
+def compute(problem: dict, ratings: dict, rubric: dict, *, scored_at: str,
+            parts: dict | None = None) -> dict:
+    """The score block for a problem whose ratings were already checked.
+    `parts` is `_parts(rubric)` when the caller has already parsed it."""
+    parts = _parts(rubric) if parts is None else parts
     measured = {k: _measure(problem.get("demand") or [], parts["bands"][k], parts["caps"][k])
                 for k in MEASURED}
     components = {k: measured[k]["value"] for k in MEASURED}
-    components.update({k: float(ratings[k]["anchor"]) for k in RATED if k != "pain"})
+    components.update({k: float(ratings[k]["anchor"]) for k in WEIGHTED_RATED})
     lo, hi = parts["pain"]
     pain = lo + float(ratings["pain"]["anchor"]) * (hi - lo)
     weighted = sum(w * components[c] for c, w in parts["weights"].items() if c in components)
@@ -276,7 +278,7 @@ def score_problem(store: Store, problem_id: str, ratings) -> dict:
         if errs:
             raise RecordError(f"ratings refused: {'; '.join(errs)}",
                               details={"problem_id": problem_id, "errors": errs})
-        block = compute(problem, ratings, rubric, scored_at=fmt_ts(store.now()))
+        block = compute(problem, ratings, rubric, scored_at=fmt_ts(store.now()), parts=parts)
         return store.put_locked("problem", {**problem, "score": block,
                                             "demand_score": block["value"]},
                                 {"type": "scored", "value": block["value"],

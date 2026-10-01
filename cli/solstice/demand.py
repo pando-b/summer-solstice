@@ -34,17 +34,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-import yaml
-
 from solstice import credentials
 from solstice.adapters import REGISTRY, base
 from solstice.adapters.base import (
-    Adapter, Ctx, FetchFailed, Params, RateLimited, Result, Runner, TransportError, Unavailable)
+    BUDGET, OUT_OF_CREDITS, Adapter, Ctx, FetchFailed, Params, RateLimited, Result, Runner,
+    TransportError, Unavailable)
 from solstice.errors import SolsticeError, UsageError
 from solstice.state import RecordError, Store, fmt_ts, new_ulid, now_utc, parse_ts
+from solstice.workspace import adapter_cfg, budget, load_config
 
-__all__ = ["Params", "Deps", "Pacer", "fetch", "sources", "start_run", "finish_run", "reserve",
-           "load_config", "month_spend", "MAX_RETRIES"]
+__all__ = ["Deps", "Pacer", "fetch", "sources", "start_run", "finish_run", "reserve",
+           "month_spend", "MAX_RETRIES"]
 
 MAX_RETRIES = 3
 BACKOFF_BASE_S = 2.0
@@ -52,7 +52,7 @@ BACKOFF_MAX_S = 60.0
 DEFAULT_MONTHLY_CAP_USD = 50.0
 DEFAULT_PER_RUN_CAP_USD = 5.0
 # Unavailable reasons that mean the run did not get everything it asked for.
-SHORTFALL_REASONS = {"budget", "out of credits"}
+SHORTFALL_REASONS = {BUDGET, OUT_OF_CREDITS}
 _EPS = 1e-9
 
 
@@ -64,11 +64,25 @@ class BudgetError(SolsticeError):
     kind = "budget"
 
 
+def _unavailable_error(adapter: str, reason: str, run_id: str,
+                       message: str | None = None) -> AdapterError:
+    return AdapterError(message or f"{adapter} unavailable: {reason}",
+                        details={"adapter": adapter, "status": "unavailable",
+                                 "reason": reason, "run_id": run_id})
+
+
+def monthly_cap_crossed(spent: float, estimate: float, monthly: float) -> bool:
+    """True when the month is already at the cap or `estimate` would cross it."""
+    return spent >= monthly - _EPS or spent + estimate > monthly + _EPS
+
+
 def _run_process(argv: list[str], timeout: float) -> tuple[int, str, str]:
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     except FileNotFoundError:
         return 127, "", f"{argv[0]}: command not found"
+    except OSError as exc:  # e.g. not executable
+        return 126, "", f"{argv[0]}: cannot run: {exc.strerror or exc}"
     except subprocess.TimeoutExpired:
         return 124, "", f"timed out after {timeout:g}s"
     return p.returncode, p.stdout, p.stderr
@@ -90,28 +104,9 @@ class Deps:
 # --- config -------------------------------------------------------------------
 
 
-def load_config(workspace: Path) -> dict:
-    path = Path(workspace) / ".solstice" / "config.yaml"
-    if not path.is_file():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise RecordError(f"cannot read {path}: {exc}") from exc
-    return data if isinstance(data, dict) else {}
-
-
-def adapter_cfg(cfg: dict, name: str) -> dict:
-    section = (cfg.get("adapters") or {}).get(name)
-    return section if isinstance(section, dict) else {}
-
-
 def caps(cfg: dict) -> tuple[float, float]:
-    b = cfg.get("budgets") or {}
-    monthly = b.get("factory_monthly_cap_usd")
-    per_run = b.get("per_run_cap_usd")
-    return (DEFAULT_MONTHLY_CAP_USD if monthly is None else float(monthly),
-            DEFAULT_PER_RUN_CAP_USD if per_run is None else float(per_run))
+    return (budget(cfg, "factory_monthly_cap_usd", DEFAULT_MONTHLY_CAP_USD),
+            budget(cfg, "per_run_cap_usd", DEFAULT_PER_RUN_CAP_USD))
 
 
 def month_spend(store: Store, at: datetime) -> float:
@@ -221,10 +216,9 @@ def reserve(store: Store, run_id: str, adapter: Adapter, estimate_usd: float, cf
     with store.lock():
         run = _running(store, run_id)
         st = {**_fresh_status(), **(run.get("adapter_status") or {}).get(adapter.name, {})}
-        if st.get("status") == "unavailable" and st.get("reason") == "out of credits":
-            raise AdapterError(f"{adapter.name} is out of credits for the rest of run {run_id}",
-                               details={"adapter": adapter.name, "status": "unavailable",
-                                        "reason": "out of credits", "run_id": run_id})
+        if st.get("status") == "unavailable" and st.get("reason") == OUT_OF_CREDITS:
+            raise _unavailable_error(adapter.name, OUT_OF_CREDITS, run_id,
+                                     f"{adapter.name} is out of credits for the rest of run {run_id}")
         spend = float(run.get("spend_usd") or 0)
         if adapter.paid:
             monthly, per_run = caps(cfg)
@@ -233,13 +227,13 @@ def reserve(store: Store, run_id: str, adapter: Adapter, estimate_usd: float, cf
             if spend + estimate_usd > per_run + _EPS:
                 why = (f"per-run cap ${per_run:g} would be crossed: run has ${spend:.4f}, "
                        f"{adapter.name} needs ${estimate_usd:.4f}")
-            elif month >= monthly - _EPS or month + estimate_usd > monthly + _EPS:
+            elif monthly_cap_crossed(month, estimate_usd, monthly):
                 why = (f"monthly factory cap ${monthly:g} would be crossed: ${month:.4f} spent "
                        f"this month, {adapter.name} needs ${estimate_usd:.4f}")
             if why:
                 _set_status(store, run, adapter.name, {"type": "adapter_unavailable",
                                                        "adapter": adapter.name, "reason": why},
-                            status="unavailable", reason="budget", error=None)
+                            status="unavailable", reason=BUDGET, error=None)
                 raise BudgetError(why, details={
                     "adapter": adapter.name, "run_id": run_id, "estimate_usd": estimate_usd,
                     "run_spend_usd": round(spend, 6), "per_run_cap_usd": per_run,
@@ -290,9 +284,7 @@ def _fetch_in_run(store, adapter: Adapter, params: Params, deps: Deps, run_id: s
 
     def unavailable(reason: str):
         _mark_unavailable(store, run_id, adapter.name, reason)
-        return AdapterError(f"{adapter.name} unavailable: {reason}",
-                            details={"adapter": adapter.name, "status": "unavailable",
-                                     "reason": reason, "run_id": run_id})
+        return _unavailable_error(adapter.name, reason, run_id)
 
     reason = adapter.unavailable_reason(acfg, deps.home)
     if reason:
@@ -318,6 +310,8 @@ def _fetch_in_run(store, adapter: Adapter, params: Params, deps: Deps, run_id: s
         status, error = "failed", credentials.redact(str(exc)) or type(exc).__name__
     except (KeyError, TypeError, ValueError, AttributeError, IndexError) as exc:
         status, error = "failed", credentials.redact(f"unreadable response: {type(exc).__name__}: {exc}")
+    except Exception as exc:  # noqa: BLE001 -- anything else still settles the reservation as failed
+        status, error = "failed", credentials.redact(f"{type(exc).__name__}: {exc}")
 
     if status == "unavailable":
         actual = 0.0  # the source refused before doing paid work
@@ -338,8 +332,10 @@ def _fetch_in_run(store, adapter: Adapter, params: Params, deps: Deps, run_id: s
                     ok=st["ok"] + (status == "ok"), failures=st["failures"] + (status == "failed"),
                     spend_usd=max(0.0, st["spend_usd"] + delta))
         if status == "ok":
+            known = store.evidence_index() if result.evidence else {}
             evidence_ids = list(dict.fromkeys(
-                store.insert_locked("evidence", ev)["id"] for ev in result.evidence))
+                store.insert_locked("evidence", ev, known_evidence=known)["id"]
+                for ev in result.evidence))
             entries = [{"id": new_ulid(ctx.now), **e} for e in result.entries]
             problem = _record_success(store, adapter, new_problem, problem_id, entries,
                                       evidence_ids)
@@ -347,9 +343,7 @@ def _fetch_in_run(store, adapter: Adapter, params: Params, deps: Deps, run_id: s
             problem = _record_failure(store, adapter, new_problem, problem_id, error, ctx.now)
 
     if status == "unavailable":
-        raise AdapterError(f"{adapter.name} unavailable: {why}",
-                           details={"adapter": adapter.name, "status": "unavailable",
-                                    "reason": why, "run_id": run_id})
+        raise _unavailable_error(adapter.name, why, run_id)
     if status == "failed":
         details = {"adapter": adapter.name, "status": "failed", "error": error, "run_id": run_id}
         if problem is not None:
@@ -433,9 +427,8 @@ def sources(store: Store, deps: Deps) -> dict:
             reason = a.unavailable_reason(acfg, deps.home)
             if reason is None and gone:
                 reason = str(credentials.MissingKey(gone))
-            if reason is None and a.paid and (spent >= monthly - _EPS
-                                              or spent + unit > monthly + _EPS):
-                reason = "budget"
+            if reason is None and a.paid and monthly_cap_crossed(spent, unit, monthly):
+                reason = BUDGET
             status = "unavailable" if reason else "available"
         item = {"name": a.name, "label": a.label, "status": status, "method": a.method,
                 "confidence": a.confidence, "paid": a.paid, "evidence_only": a.evidence_only,

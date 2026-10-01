@@ -32,13 +32,11 @@ import math
 from fractions import Fraction
 from pathlib import Path
 
-from solstice.demand import load_config
 from solstice.errors import SolsticeError
-from solstice.lifecycle import fmt_ts
+from solstice.lifecycle import BREAK_EVEN_MAX, MARGIN_FLOOR, fmt_ts
+from solstice.workspace import budget, load_config
 
 DEFAULT_OWNER_RATE_USD = 100.0
-MARGIN_FLOOR = 0.80
-BREAK_EVEN_MAX = 10
 MRR_TARGET_USD = 5000
 BILLINGS = ("monthly", "yearly", "one_time")
 
@@ -63,8 +61,7 @@ class ProformaError(SolsticeError):
 
 
 def owner_rate(workspace: Path) -> float:
-    value = (load_config(workspace).get("budgets") or {}).get("owner_hourly_rate_usd")
-    return DEFAULT_OWNER_RATE_USD if value is None else float(value)
+    return budget(load_config(workspace), "owner_hourly_rate_usd", DEFAULT_OWNER_RATE_USD)
 
 
 def _is_num(v) -> bool:
@@ -119,10 +116,6 @@ def _usd(x: Fraction) -> float:
     return float(round(x, 2))
 
 
-def _ceil(x: Fraction) -> int:
-    return math.ceil(x)
-
-
 def compute(inputs: dict, *, owner_rate: float) -> dict:
     """{"pro_forma": <decision schema block>, "r20": <gate results>}."""
     errs = _check(inputs)
@@ -145,7 +138,7 @@ def compute(inputs: dict, *, owner_rate: float) -> dict:
     if upfront == 0:
         break_even = 0
     elif per_charge > 0:
-        break_even = _ceil(upfront / per_charge)
+        break_even = math.ceil(upfront / per_charge)
     else:
         break_even = None
 
@@ -159,7 +152,7 @@ def compute(inputs: dict, *, owner_rate: float) -> dict:
         "upfront_spend_usd": _usd(upfront),
         "gross_margin": float(round(gross_margin, 4)),
         "break_even_customers": break_even,
-        "customers_for_5k_mrr": _ceil(MRR_TARGET_USD / revenue_m),
+        "customers_for_5k_mrr": math.ceil(MRR_TARGET_USD / revenue_m),
     }
     if "channel_capacity_customers" in inputs:
         pf["channel_capacity_customers"] = inputs["channel_capacity_customers"]
