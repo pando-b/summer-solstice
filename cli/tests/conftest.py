@@ -42,3 +42,24 @@ def write_config():
         return cfg
 
     return _write
+
+
+@pytest.fixture
+def clock():
+    from factories import Clock
+
+    return Clock()
+
+
+@pytest.fixture
+def ws(tmp_path):
+    path = tmp_path / "ws"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def store(ws, clock):
+    from solstice.state import Store
+
+    return Store(ws, now=clock, lock_wait=0)

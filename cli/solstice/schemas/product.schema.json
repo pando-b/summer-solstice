@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summer-solstice.invalid/schemas/product.schema.json",
+  "title": "Product",
+  "type": "object",
+  "required": [
+    "id",
+    "schema_version",
+    "created_at",
+    "updated_at",
+    "name",
+    "slug",
+    "status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/ulid"
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "created_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "updated_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "slug": {
+      "type": "string",
+      "minLength": 1
+    },
+    "shape": {
+      "type": "string"
+    },
+    "problem_id": {
+      "$ref": "#/$defs/ulid"
+    },
+    "decision_id": {
+      "$ref": "#/$defs/ulid"
+    },
+    "status": {
+      "enum": [
+        "qualified",
+        "testing",
+        "parked",
+        "building",
+        "built",
+        "in_review",
+        "awaiting_owner",
+        "live",
+        "growing",
+        "killing",
+        "selling",
+        "sunset"
+      ]
+    },
+    "channel_live_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "alive_bar": {
+      "$ref": "#/$defs/alive_bar"
+    },
+    "kill_window": {
+      "$ref": "#/$defs/kill_window"
+    },
+    "repo_path": {
+      "type": "string"
+    },
+    "estimated_upfront_spend_usd": {
+      "type": "number",
+      "minimum": 0
+    },
+    "operator_load": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "test_started_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "awaiting_owner_from": {
+      "enum": [
+        "qualified",
+        "testing",
+        "parked",
+        "building",
+        "built",
+        "in_review",
+        "live",
+        "growing",
+        "killing"
+      ]
+    }
+  },
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "alive_bar": {
+      "type": "object",
+      "required": [
+        "metric",
+        "threshold"
+      ],
+      "properties": {
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "kill_window": {
+      "type": "object",
+      "required": [
+        "days"
+      ],
+      "properties": {
+        "days": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "buy_signal": {
+      "type": "object",
+      "description": "Event appended to <id>.events.jsonl. waitlist_signup is recorded but is not a buy signal (R21).",
+      "required": [
+        "type",
+        "kind",
+        "source",
+        "at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "buy_signal"
+        },
+        "kind": {
+          "enum": [
+            "pre_order",
+            "founding_member",
+            "paid_conversion",
+            "waitlist_signup"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference": {
+          "type": "string"
+        },
+        "amount_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    }
+  }
+}
